@@ -1,0 +1,32 @@
+project_name: default
+description: ''
+fps: 30
+mode: teleop
+cameras:
+- name: cam_0
+  type: pseudo
+  device: 0
+  width: 640
+  height: 480
+  fps: 30
+  pixel_format: rgb24
+- name: cam_1
+  type: v4l2
+  device: 0
+  width: 640
+  height: 480
+  fps: 30
+  pixel_format: rgb24
+robots:
+- name: arm_0
+  type: pseudo
+  role: follower
+  num_joints: 6
+  device: ''
+storage:
+  root: ~/rollio_data
+  lerobot_version: v2.1
+controls:
+  start_stop: ' '
+  keep: k
+  discard: d

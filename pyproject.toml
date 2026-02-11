@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rollio"
+version = "0.1.0"
+description = "Timestamp-aligned robot episode collection for VLA/RL training"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "pydantic>=2.0",
+    "pyarrow>=14.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+gpu = ["cupy-cuda13x>=13.0"]
+realsense = ["pyrealsense2"]
+
+[project.scripts]
+rollio = "rollio.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rollio*"]
