@@ -18,7 +18,9 @@ from rollio.episode.writer import LeRobotV21Writer
 from rollio.sensors.base import ImageSensor, RobotSensor
 from rollio.sensors.pseudo_camera import PseudoCamera
 from rollio.sensors.pseudo_robot import PseudoRobot
-from rollio.tui.renderer import render_frame
+from rollio.tui.renderer import (
+    RENDER_MODES, MODE_LABELS, blit_frame, calc_render_size, render_frame,
+)
 
 # ── Synchronised output ───────────────────────────────────────────────
 _SYNC_S = b"\x1b[?2026h"
@@ -151,6 +153,10 @@ def run_collection(cfg: RollioConfig) -> None:
 
     episodes_kept = 0
     pending_episode: EpisodeData | None = None
+    mode_idx = 1   # start at "16" (lower bandwidth)
+    show_debug = False
+    _t_prev_frame = time.monotonic()
+    actual_fps = 0.0
 
     with _Term() as term:
         out = sys.stdout.buffer
@@ -159,11 +165,20 @@ def run_collection(cfg: RollioConfig) -> None:
         try:
             while True:
                 t0 = time.monotonic()
+                _frame_dt = t0 - _t_prev_frame
+                _t_prev_frame = t0
+                if _frame_dt > 0:
+                    actual_fps = 0.9 * actual_fps + 0.1 / _frame_dt
+                render_mode = RENDER_MODES[mode_idx]
 
                 # ── Input ────────────────────────────────────────
                 key = term.key()
                 if key == "q":
                     break
+                elif key == "m":
+                    mode_idx = (mode_idx + 1) % len(RENDER_MODES)
+                elif key == "\\":
+                    show_debug = not show_debug
                 elif key == cfg.controls.start_stop:
                     if recorder.recording:
                         pending_episode = recorder.stop()
@@ -177,69 +192,82 @@ def run_collection(cfg: RollioConfig) -> None:
                     pending_episode = None
 
                 # ── Read sensors ─────────────────────────────────
+                _t_sns = time.monotonic()
                 if recorder.recording:
                     latest_frames = recorder.tick()
                     _, latest_states = recorder.peek_sensors()
-                    # Use frames from tick for camera, peek for robot display
-                    # (tick already recorded robot states)
                     robot_display = {}
                     for name, rob in robots.items():
                         _, st = rob.read()
                         robot_display[name] = st
                 else:
                     latest_frames, robot_display = recorder.peek_sensors()
+                _t_sns = time.monotonic() - _t_sns
 
                 # ── Layout ───────────────────────────────────────
+                _t_rnd = time.monotonic()
                 W, H = term.cols, term.rows
                 status_h = 2
-                cam_w = max(10, W * 2 // 3)
-                panel_w = max(10, W - cam_w)
+                panel_w = max(10, W // 3)
+                cam_area_w = max(10, W - panel_w)
                 body_h = max(2, H - status_h)
 
-                # ── Render camera(s) ─────────────────────────────
+                # ── Compose frame ────────────────────────────────
                 cam_names = list(latest_frames.keys())
-                if cam_names:
-                    # Stack multiple cameras vertically
-                    cam_h_each = max(2, body_h // max(len(cam_names), 1))
-                    cam_bytes = bytearray()
-                    for ci, cn in enumerate(cam_names):
-                        frame = latest_frames.get(cn)
-                        if frame is not None:
-                            rendered = render_frame(frame, cam_w, cam_h_each)
-                            cam_bytes.extend(rendered)
-                            if ci < len(cam_names) - 1:
-                                cam_bytes.extend(_RST_NL)
-                    cam_bytes.extend(b"\x1b[0m")
-                else:
-                    cam_bytes = b"(no cameras)"
-
-                # ── Render robot panel ───────────────────────────
                 robot_bytes = _robot_panel(robot_display, panel_w, body_h)
 
-                # ── Compose frame ────────────────────────────────
                 frame_out = bytearray()
                 frame_out.extend(b"\x1b[H")   # cursor home
 
-                # Write camera region line by line, then robot panel
-                cam_lines = bytes(cam_bytes).split(b"\x1b[0m\n")
+                # Camera(s) — fixed 480p resolution, aspect preserved
+                if cam_names:
+                    cam_h_each = max(2, body_h // max(len(cam_names), 1))
+                    cam_row = 1
+                    for cn in cam_names:
+                        frame = latest_frames.get(cn)
+                        if frame is not None:
+                            fh, fw = frame.shape[:2]
+                            rw, rh = calc_render_size(
+                                fw, fh, cam_area_w, cam_h_each)
+                            rendered = render_frame(
+                                frame, rw, rh, render_mode)
+                            frame_out.extend(
+                                blit_frame(rendered, cam_row, 1))
+                        cam_row += cam_h_each
+
+                # Robot panel — right side
                 rob_text = robot_bytes.decode("utf-8", errors="replace")
-                rob_lines_raw = rob_text.split("\x1b[0m")
-                rob_lines = [r for r in rob_lines_raw if r or True]
-
+                rob_lines = rob_text.split("\x1b[0m")
                 for y in range(body_h):
-                    # Camera portion
-                    if y < len(cam_lines):
-                        frame_out.extend(cam_lines[y])
-                    else:
-                        frame_out.extend(b" " * cam_w)
-                    frame_out.extend(b"\x1b[0m")
-
-                    # Robot panel portion (position cursor)
                     frame_out.extend(
-                        f"\x1b[{y+1};{cam_w+1}H".encode())
+                        f"\x1b[{y+1};{cam_area_w+1}H".encode())
                     if y < len(rob_lines):
                         frame_out.extend(rob_lines[y].encode())
                     frame_out.extend(b"\x1b[0m\n")
+                _t_rnd = time.monotonic() - _t_rnd
+
+                # ── Debug overlay ─────────────────────────────
+                if show_debug:
+                    _dw = 28
+                    _dc = max(1, W - _dw)
+                    _dbg = [
+                        f"\x1b[1m{'─── DEBUG ':─<{_dw}}\x1b[0m",
+                        f"  {'FPS:':>8s} {actual_fps:6.1f}",
+                        f"  {'Render:':>8s} {_t_rnd*1000:5.1f} ms",
+                        f"  {'Sensor:':>8s} {_t_sns*1000:5.1f} ms",
+                        f"  {'Total:':>8s} {(time.monotonic()-t0)*1000:5.1f} ms",
+                        f"  {'Mode:':>8s} {MODE_LABELS[render_mode]}",
+                        f"  {'Output:':>8s} {len(frame_out)/1024:5.1f} kB",
+                        f"{'─' * _dw}",
+                    ]
+                    for _di, _dl in enumerate(_dbg):
+                        _st = ("\x1b[48;5;234m\x1b[38;5;82m\x1b[1m"
+                               if _di == 0 else
+                               "\x1b[48;5;234m\x1b[38;5;250m")
+                        frame_out.extend(
+                            f"\x1b[{2+_di};{_dc}H"
+                            f"{_st}{_dl:<{_dw}}"
+                            f"\x1b[0m".encode())
 
                 # ── Status bar ───────────────────────────────────
                 if recorder.recording:
@@ -253,12 +281,12 @@ def run_collection(cfg: RollioConfig) -> None:
                 else:
                     state_str = "\x1b[1;92m⏸ IDLE\x1b[0m"
 
-                fps = 1.0 / max(time.monotonic() - t0, 1e-9)
                 bar1 = (f" {state_str}  │  "
-                        f"Episodes: {episodes_kept}  │  "
-                        f"FPS: {fps:.0f}  │  "
-                        f"[SPACE]=start/stop  [k]=keep  [d]=discard  "
-                        f"[q]=quit")
+                        f"Ep: {episodes_kept}  │  "
+                        f"FPS: {actual_fps:.0f}  │  "
+                        f"{MODE_LABELS[render_mode]}  │  "
+                        f"[SPACE]=rec  [k]=keep  [d]=discard  "
+                        f"[m]=mode  [\\]=debug  [q]=quit")
                 bar1_clean = bar1.replace("\x1b[1;91m", "").replace(
                     "\x1b[1;93m", "").replace(
                     "\x1b[1;92m", "").replace("\x1b[0m", "")
@@ -283,5 +311,3 @@ def run_collection(cfg: RollioConfig) -> None:
                 c.close()
             for r in robots.values():
                 r.close()
-
-_RST_NL = b"\x1b[0m\n"
