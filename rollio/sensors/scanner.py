@@ -14,13 +14,18 @@ if TYPE_CHECKING:
 class DetectedDevice:
     """A detected hardware device."""
     kind: Literal["camera", "robot"]
-    dtype: str                       # "pseudo", "v4l2", "realsense", "airbot"…
+    dtype: str                       # "pseudo", "v4l2", "realsense_color", etc.
     device_id: int | str             # index or path
     label: str                       # human-readable description
-    properties: dict                 # width, height, fps, num_joints, etc.
+    properties: dict                 # extra properties (num_joints, etc.)
     formats: list[CameraFormat] = field(default_factory=list)  # for cameras
     id_path: str = ""                # udev ID_PATH for stable identification
     channels: list[CameraChannel] = field(default_factory=list)  # multi-channel
+    # Common camera properties (extracted from properties for convenience)
+    width: int = 640
+    height: int = 480
+    fps: int = 30
+    pixel_format: str = "RGB"        # MJPG, YUYV, z16, y8, y16, bgr8, etc.
 
 
 # ─── Camera type registry ─────────────────────────────────────────────

@@ -23,12 +23,13 @@ class CameraChannelConfig(BaseModel):
 class CameraConfig(BaseModel):
     name: str = "cam0"
     type: Literal["pseudo", "v4l2", "realsense"] = "pseudo"
-    device: int | str = 0          # device index or path
+    device: int | str = 0          # device index or path (for realsense: "serial:channel")
     width: int = 640               # primary channel width (for single-channel compat)
     height: int = 480              # primary channel height
     fps: int = 30                  # primary channel fps
     pixel_format: str = "rgb24"    # primary channel format
     id_path: str = ""              # udev ID_PATH for stable device identification
+    channel: str = "color"         # for realsense: "color", "depth", or "infrared"
     channels: list[CameraChannelConfig] = Field(
         default_factory=list)      # multi-channel config (empty = single channel mode)
 

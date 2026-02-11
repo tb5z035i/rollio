@@ -28,7 +28,8 @@ from rollio.sensors.realsense_camera import RealSenseCamera
 from rollio.sensors.scanner import DetectedDevice, scan_cameras, scan_robots
 from rollio.sensors.v4l2_camera import V4L2Camera
 from rollio.tui.renderer import (
-    RENDER_MODES, MODE_LABELS, blit_frame, calc_render_size, render_frame,
+    RENDER_MODES, DEPTH_MODES, MODE_LABELS,
+    blit_frame, calc_render_size, render_frame, render_depth,
 )
 
 # ── Sync output ────────────────────────────────────────────────────────
@@ -113,15 +114,34 @@ def _make_camera(dev: DetectedDevice,
             return cam
         except Exception:
             pass
-    elif dev.dtype == "realsense":
+    elif dev.dtype.startswith("realsense_"):
+        # Extract channel and serial from device_id (format: "serial:channel")
+        channel = dev.properties.get("channel", "color")
+        serial = dev.properties.get("serial", str(dev.device_id).split(":")[0])
+        pf = pixel_format or dev.pixel_format
         try:
-            cam = RealSenseCamera(
-                name="preview",
-                device=str(dev.device_id),
-                width=w, height=h, fps=f,
-                enable_color=True,
-                enable_depth=False,  # Disable depth for preview
-                enable_infrared=False)
+            # Build kwargs based on which channel is enabled
+            kwargs = {
+                "name": "preview",
+                "device": serial,
+                "enable_color": (channel == "color"),
+                "enable_depth": (channel == "depth"),
+                "enable_infrared": (channel == "infrared"),
+                "preview_channel": channel,
+            }
+            # Set the resolution and format for the correct channel
+            if channel == "color":
+                kwargs.update(width=w, height=h, fps=f)
+            elif channel == "depth":
+                kwargs.update(depth_width=w, depth_height=h, depth_fps=f)
+                if pf:
+                    kwargs["depth_format"] = pf
+            elif channel == "infrared":
+                kwargs.update(ir_width=w, ir_height=h, ir_fps=f)
+                if pf:
+                    kwargs["ir_format"] = pf
+
+            cam = RealSenseCamera(**kwargs)
             cam.open()
             return cam
         except Exception:
@@ -184,9 +204,12 @@ def _pick_format(term: _Term, out, formats: list[CameraFormat],
     """Display format picker.
 
     Returns selected index, or None if cancelled (Esc).
+    Uses same UX as resolution picker (enter number + press Enter).
     """
     if not formats:
         return None
+
+    input_buf = ""
 
     while True:
         buf = io.BytesIO()
@@ -198,12 +221,14 @@ def _pick_format(term: _Term, out, formats: list[CameraFormat],
         # Instructions
         _draw_text(buf, 3, 2,
                    f"Enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel")
+        _draw_text(buf, 4, 2,
+                   f"Input: \x1b[1;97m{input_buf}\x1b[5m_\x1b[0m")
 
         # List formats
-        start_row = 5
+        start_row = 6
         for idx, fmt in enumerate(formats):
             is_cur = (idx == current_idx)
-            num_str = f"{idx + 1}"
+            num_str = f"{idx + 1:>2}"
             n_modes = len(fmt.modes)
             if is_cur:
                 text = (f"\x1b[1;92m[{num_str}] {fmt.fourcc}\x1b[0m "
@@ -221,13 +246,20 @@ def _pick_format(term: _Term, out, formats: list[CameraFormat],
             continue
         elif key == "\x1b":  # Escape
             return None
+        elif key == "\n" or key == "\r":
+            # Try to parse input
+            if input_buf:
+                try:
+                    sel = int(input_buf) - 1
+                    if 0 <= sel < len(formats):
+                        return sel
+                except ValueError:
+                    pass
+            input_buf = ""  # Clear on invalid
+        elif key == "\x7f" or key == "\x08":  # Backspace
+            input_buf = input_buf[:-1]
         elif key.isdigit():
-            try:
-                sel = int(key) - 1
-                if 0 <= sel < len(formats):
-                    return sel
-            except ValueError:
-                pass
+            input_buf += key
 
 
 def _pick_resolution(term: _Term, out, modes: list[CameraMode],
@@ -343,11 +375,15 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
         format_idx = 0
         mode_sel_idx = 0  # selected mode within current format
 
-        # Current camera settings
-        cur_width = dev.properties.get("width", 640)
-        cur_height = dev.properties.get("height", 480)
-        cur_fps = dev.properties.get("fps", 30)
-        cur_format = "MJPG" if dev.dtype == "v4l2" else "RGB"
+        # Current camera settings (use DetectedDevice fields directly)
+        cur_width = dev.width
+        cur_height = dev.height
+        cur_fps = dev.fps
+        cur_format = dev.pixel_format
+
+        # Depth/IR visualization mode (for realsense_depth, realsense_infrared)
+        depth_mode_idx = 0  # 0 = turbo colormap, 1 = gray
+        is_depth_camera = dev.dtype in ("realsense_depth", "realsense_infrared")
 
         # Try to find MJPG format as default (usually better for USB cameras)
         for fi, fmt in enumerate(formats):
@@ -407,7 +443,7 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                            f"\x1b[90mID_PATH: {id_path_display}\x1b[0m")
                 settings_row += 1
 
-            # Format/mode selection (only for v4l2)
+            # Format/mode selection (for v4l2)
             if formats and dev.dtype == "v4l2":
                 cur_fmt = formats[format_idx] if format_idx < len(formats) else None
                 modes = cur_fmt.modes if cur_fmt else []
@@ -432,6 +468,35 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                            f"\x1b[90m({len(modes)} available)\x1b[0m")
                 settings_row += 2
 
+            # Depth/IR visualization mode display
+            if is_depth_camera:
+                depth_mode_str = DEPTH_MODES[depth_mode_idx]
+                _draw_text(buf, settings_row, 2,
+                           f"\x1b[33m[d]\x1b[0m Visualization: "
+                           f"\x1b[1;97m{MODE_LABELS.get(depth_mode_str, depth_mode_str)}\x1b[0m")
+                settings_row += 1
+
+            # Format/resolution for RealSense channels
+            if formats and dev.dtype.startswith("realsense_"):
+                cur_fmt = formats[format_idx] if format_idx < len(formats) else None
+                modes = cur_fmt.modes if cur_fmt else []
+
+                # Format selector
+                fmt_str = cur_fmt.fourcc if cur_fmt else "N/A"
+                fmt_desc = cur_fmt.description if cur_fmt else ""
+                _draw_text(buf, settings_row, 2,
+                           f"\x1b[33m[f]\x1b[0m Format: "
+                           f"\x1b[1;97m{fmt_str}\x1b[0m "
+                           f"\x1b[90m({fmt_desc})\x1b[0m")
+
+                # Mode selector
+                mode_str = f"{cur_width}×{cur_height}@{cur_fps}fps"
+                _draw_text(buf, settings_row + 1, 2,
+                           f"\x1b[33m[r]\x1b[0m Resolution: "
+                           f"\x1b[1;97m{mode_str}\x1b[0m "
+                           f"\x1b[90m({len(modes)} available)\x1b[0m")
+                settings_row += 2
+
             # Live preview
             preview_y = settings_row + 1
             avail_h = max(4, H - preview_y - 5)
@@ -442,8 +507,14 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
             if cam is not None:
                 _, frame = cam.read()
                 if frame is not None:
-                    rendered = render_frame(
-                        frame, preview_w, preview_h, render_mode)
+                    # Use appropriate renderer based on device type
+                    if is_depth_camera and frame.ndim == 2:
+                        # Grayscale/depth frame - use depth renderer
+                        depth_mode = DEPTH_MODES[depth_mode_idx]
+                        rendered = render_depth(frame, preview_w, preview_h, depth_mode)
+                    else:
+                        # Color frame - use standard renderer
+                        rendered = render_frame(frame, preview_w, preview_h, render_mode)
                     buf.write(blit_frame(rendered, preview_y, 3))
             else:
                 _draw_text(buf, preview_y, 3, "(no preview available)")
@@ -458,6 +529,11 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                 if formats and dev.dtype == "v4l2":
                     controls += ("\x1b[33m[f]\x1b[0m format  "
                                  "\x1b[33m[r]\x1b[0m res  ")
+                if formats and dev.dtype.startswith("realsense_"):
+                    controls += ("\x1b[33m[f]\x1b[0m format  "
+                                 "\x1b[33m[r]\x1b[0m res  ")
+                if is_depth_camera:
+                    controls += "\x1b[33m[d]\x1b[0m viz-mode  "
                 controls += ("\x1b[33m[\\]\x1b[0m debug  "
                              "\x1b[33m[Esc/q]\x1b[0m quit")
                 _draw_text(buf, prompt_row, 2, controls)
@@ -490,7 +566,7 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                     break               # skip this camera
                 elif key == "m":
                     mode_idx = (mode_idx + 1) % len(RENDER_MODES)
-                elif key == "f" and formats and dev.dtype == "v4l2":
+                elif key == "f" and formats and (dev.dtype == "v4l2" or dev.dtype.startswith("realsense_")):
                     # Open format picker
                     selected = _pick_format(term, out, formats, format_idx, W, H)
                     if selected is not None:
@@ -503,7 +579,7 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                             cur_width, cur_height, cur_fps = m.width, m.height, m.fps
                         _needs_reopen = True
                     _needs_clear = True
-                elif key == "r" and formats and dev.dtype == "v4l2":
+                elif key == "r" and formats and (dev.dtype == "v4l2" or dev.dtype.startswith("realsense_")):
                     # Open resolution picker
                     cur_fmt = formats[format_idx] if format_idx < len(formats) else None
                     if cur_fmt and cur_fmt.modes:
@@ -515,6 +591,9 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                             cur_width, cur_height, cur_fps = m.width, m.height, m.fps
                             _needs_reopen = True
                         _needs_clear = True
+                elif key == "d" and is_depth_camera:
+                    # Cycle depth visualization mode (turbo / gray)
+                    depth_mode_idx = (depth_mode_idx + 1) % len(DEPTH_MODES)
                 elif key == "\\":
                     show_debug = not show_debug
                 elif key == "q" or key == "\x1b":
@@ -551,15 +630,23 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
             cam.close()
 
         if chosen_name:
+            # Map realsense_* types back to "realsense" and extract channel
+            cam_type = dev.dtype
+            channel = "color"
+            if dev.dtype.startswith("realsense_"):
+                cam_type = "realsense"
+                channel = dev.properties.get("channel", dev.dtype.replace("realsense_", ""))
+
             configs.append(CameraConfig(
                 name=chosen_name,
-                type=dev.dtype,
+                type=cam_type,
                 device=dev.device_id,
                 width=cur_width,
                 height=cur_height,
                 fps=cur_fps,
                 pixel_format=cur_format,
                 id_path=dev.id_path,
+                channel=channel,
             ))
 
     return configs
@@ -759,12 +846,23 @@ def _screen_summary(term: _Term, out,
     # Store (config, sensor, device) tuples for camera setting changes
     cam_sensors: list[tuple[CameraConfig, any, DetectedDevice | None]] = []
     used_cam_devs: set[int] = set()
+
+    def _types_match(dev_dtype: str, cfg_type: str, cfg_channel: str) -> bool:
+        """Check if device type matches config type, handling realsense channels."""
+        if dev_dtype == cfg_type:
+            return True
+        # Handle realsense_* device types matching "realsense" config type
+        if cfg_type == "realsense" and dev_dtype.startswith("realsense_"):
+            dev_channel = dev_dtype.replace("realsense_", "")
+            return dev_channel == cfg_channel
+        return False
+
     for cc in cam_configs:
         sensor = None
         matched_dev = None
         # Match by both device_id AND type for exact pairing
         for di, d in enumerate(cam_devs):
-            if di not in used_cam_devs and str(d.device_id) == str(cc.device) and d.dtype == cc.type:
+            if di not in used_cam_devs and str(d.device_id) == str(cc.device) and _types_match(d.dtype, cc.type, cc.channel):
                 sensor = _make_camera(d, cc.width, cc.height, cc.fps, cc.pixel_format)
                 matched_dev = d
                 used_cam_devs.add(di)
@@ -772,7 +870,7 @@ def _screen_summary(term: _Term, out,
         # Fallback: match by type only if exact match not found
         if sensor is None:
             for di, d in enumerate(cam_devs):
-                if di not in used_cam_devs and d.dtype == cc.type:
+                if di not in used_cam_devs and _types_match(d.dtype, cc.type, cc.channel):
                     sensor = _make_camera(d, cc.width, cc.height, cc.fps, cc.pixel_format)
                     matched_dev = d
                     used_cam_devs.add(di)
@@ -868,19 +966,24 @@ def _screen_summary(term: _Term, out,
                 is_sel = (ci == selected_cam)
                 sel_mark = "\x1b[97;1m▸\x1b[0m" if is_sel else " "
                 highlight = "\x1b[97;1;44m" if is_sel else "\x1b[96m"
-                fmt_info = f"{cc.pixel_format or ''} " if cc.pixel_format else ""
+                # Line 1: index and name
                 _draw_text_clear(buf, row, 2,
-                                 f"│ {sel_mark}{ci+1}.{highlight}{cc.name[:10]:<10}\x1b[0m "
-                                 f"\x1b[90m{fmt_info}{cc.width}×{cc.height}@{cc.fps or '?'}\x1b[0m",
+                                 f"│ {sel_mark}{ci+1}.{highlight}{cc.name[:12]}\x1b[0m",
                                  info_w)
                 row += 1
-                # Show id_path if available (truncated)
-                if cc.id_path:
-                    id_path_trunc = cc.id_path[:info_w - 8] if len(cc.id_path) > info_w - 8 else cc.id_path
-                    _draw_text_clear(buf, row, 2,
-                                     f"│    \x1b[90m{id_path_trunc}\x1b[0m",
-                                     info_w)
-                    row += 1
+                # Line 2: type | format | resolution | fps (aligned)
+                type_str = cc.type
+                if cc.type == "realsense":
+                    # Abbreviate channel names: color→col, depth→dep, infrared→ir
+                    ch_abbr = {"color": "col", "depth": "dep", "infrared": "ir"}.get(cc.channel, cc.channel or "col")
+                    type_str = f"rs:{ch_abbr}"
+                fmt_str = cc.pixel_format or "?"
+                res_str = f"{cc.width}×{cc.height}"
+                fps_str = f"{cc.fps}fps" if cc.fps else "?fps"
+                _draw_text_clear(buf, row, 2,
+                                 f"│    \x1b[90m{type_str:<8} {fmt_str:<5} {res_str:<10} {fps_str}\x1b[0m",
+                                 info_w)
+                row += 1
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
             row += 1
             _draw_text_clear(buf, row, 2,
@@ -917,18 +1020,39 @@ def _screen_summary(term: _Term, out,
             cam_h_total = max(4, (avail_h * 2) // 3) if n_cams else 0
             rob_h_total = avail_h - cam_h_total if n_robs else 0
 
-            # Draw camera previews
+            # Draw camera previews in a grid
             if n_cams > 0:
-                # Reserve 1 row for label below each preview
-                cam_h_each = max(4, cam_h_total // n_cams)
                 mode = RENDER_MODES[mode_idx]
                 _draw_text(buf, preview_row, preview_col,
                            f"\x1b[1;96m{'─── CAMERAS ':─<{preview_w}}\x1b[0m")
                 preview_row += 1
 
+                # Calculate grid dimensions
+                # Try to make cells roughly square-ish, max 3 columns
+                if n_cams <= 2:
+                    grid_cols = n_cams
+                elif n_cams <= 4:
+                    grid_cols = 2
+                elif n_cams <= 6:
+                    grid_cols = 3
+                else:
+                    grid_cols = min(4, (n_cams + 1) // 2)
+                grid_rows = (n_cams + grid_cols - 1) // grid_cols
+
+                # Calculate cell size (leave 2 rows for label per cell)
+                cell_w = max(15, (preview_w - 2) // grid_cols)
+                cell_h = max(4, cam_h_total // grid_rows)
+                preview_h_per = max(2, cell_h - 2)  # leave room for label
+
                 for ci, (cc, sensor, dev) in enumerate(cam_sensors):
+                    # Calculate grid position
+                    grid_r = ci // grid_cols
+                    grid_c = ci % grid_cols
+                    cell_row = preview_row + grid_r * cell_h
+                    cell_col = preview_col + grid_c * cell_w
+
                     is_sel = (ci == selected_cam)
-                    preview_h = cam_h_each - 2  # leave room for label
+
                     if sensor is not None:
                         try:
                             _, frame = sensor.read()
@@ -936,26 +1060,32 @@ def _screen_summary(term: _Term, out,
                                 # Calculate size preserving aspect
                                 fh, fw = frame.shape[:2]
                                 rw, rh = calc_render_size(
-                                    fw, fh, preview_w - 2, preview_h)
-                                rendered = render_frame(frame, rw, rh, mode)
-                                buf.write(blit_frame(
-                                    rendered, preview_row, preview_col + 1))
+                                    fw, fh, cell_w - 2, preview_h_per)
+                                # Use depth renderer for depth/IR channels
+                                if cc.channel in ("depth", "infrared") and frame.ndim == 2:
+                                    rendered = render_depth(frame, rw, rh, "turbo")
+                                else:
+                                    rendered = render_frame(frame, rw, rh, mode)
+                                buf.write(blit_frame(rendered, cell_row, cell_col + 1))
                         except Exception:
-                            _draw_text(buf, preview_row, preview_col + 1,
-                                       f"\x1b[90m(error reading frame)\x1b[0m")
+                            _draw_text(buf, cell_row, cell_col + 1,
+                                       f"\x1b[90m(err)\x1b[0m")
                     else:
-                        _draw_text(buf, preview_row, preview_col + 1,
-                                   f"\x1b[90m(no preview available)\x1b[0m")
+                        _draw_text(buf, cell_row, cell_col + 1,
+                                   f"\x1b[90m(no preview)\x1b[0m")
 
-                    # Draw camera label below preview with selection indicator
-                    label_row = preview_row + preview_h
-                    sel_ind = "\x1b[97;1m▸\x1b[0m " if is_sel else "  "
-                    fmt_info = f"{cc.pixel_format or ''} " if cc.pixel_format else ""
-                    _draw_text_clear(buf, label_row, preview_col,
-                                     f"{sel_ind}\x1b[96;1m{cc.name}\x1b[0m "
-                                     f"\x1b[90m({cc.type} {fmt_info}{cc.width}×{cc.height}@{cc.fps or '?'})\x1b[0m",
-                                     preview_w)
-                    preview_row += cam_h_each
+                    # Draw camera label below preview
+                    label_row = cell_row + preview_h_per
+                    sel_ind = "\x1b[97;1m▸\x1b[0m" if is_sel else " "
+                    # Compact label with channel info for realsense
+                    type_str = cc.type
+                    if cc.type == "realsense" and cc.channel:
+                        type_str = f"rs:{cc.channel[:3]}"
+                    label = f"{sel_ind}{ci+1}.\x1b[96;1m{cc.name[:6]}\x1b[0m \x1b[90m{type_str}\x1b[0m"
+                    _draw_text_clear(buf, label_row, cell_col, label, cell_w)
+
+                # Move preview_row past the grid
+                preview_row += grid_rows * cell_h
 
             # Draw robot states
             if n_robs > 0:
@@ -1004,7 +1134,7 @@ def _screen_summary(term: _Term, out,
             cam_controls = ""
             if selected_cam >= 0 and cam_sensors[selected_cam][2]:
                 dev = cam_sensors[selected_cam][2]
-                if dev and dev.dtype == "v4l2" and dev.formats:
+                if dev and dev.formats and (dev.dtype == "v4l2" or dev.dtype.startswith("realsense_")):
                     cam_controls = "\x1b[33m[f]\x1b[0m format  \x1b[33m[r]\x1b[0m resolution  "
             _draw_text_clear(buf, footer_row, 2,
                              f"\x1b[33m[Enter]\x1b[0m save  "
@@ -1040,7 +1170,7 @@ def _screen_summary(term: _Term, out,
             # Format selection for selected camera
             elif key == "f" and selected_cam >= 0:
                 cc, sensor, dev = cam_sensors[selected_cam]
-                if dev and dev.dtype == "v4l2" and dev.formats:
+                if dev and dev.formats and (dev.dtype == "v4l2" or dev.dtype.startswith("realsense_")):
                     # Find current format index
                     cur_fmt_idx = 0
                     for fi, fmt in enumerate(dev.formats):
@@ -1060,7 +1190,7 @@ def _screen_summary(term: _Term, out,
             # Resolution selection for selected camera
             elif key == "r" and selected_cam >= 0:
                 cc, sensor, dev = cam_sensors[selected_cam]
-                if dev and dev.dtype == "v4l2" and dev.formats:
+                if dev and dev.formats and (dev.dtype == "v4l2" or dev.dtype.startswith("realsense_")):
                     # Find current format and mode index
                     cur_fmt = None
                     for fmt in dev.formats:

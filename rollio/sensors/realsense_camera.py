@@ -41,7 +41,11 @@ class RealSenseCamera(ImageSensor):
 
     @classmethod
     def scan(cls) -> list["DetectedDevice"]:
-        """Scan for available RealSense devices."""
+        """Scan for available RealSense devices.
+
+        Each channel (color, depth, infrared) is exposed as a separate camera
+        to simplify the setup wizard.
+        """
         from rollio.sensors.scanner import DetectedDevice
 
         found: list[DetectedDevice] = []
@@ -52,67 +56,87 @@ class RealSenseCamera(ImageSensor):
                 sn = dev.get_info(rs.camera_info.serial_number)
                 name = dev.get_info(rs.camera_info.name)
 
-                # Enumerate available channels
-                channels = []
-                has_infrared = False
+                # Collect channel info: (channel_name, width, height, fps, pixel_format)
+                # We need to find compatible resolution/format combinations
+                channel_info: dict[str, tuple[int, int, int, str]] = {}
 
                 for sensor in dev.query_sensors():
                     for profile in sensor.get_stream_profiles():
                         stream_type = profile.stream_type()
-                        if stream_type == rs.stream.color and not any(
-                                c.name == "color" for c in channels):
-                            vp = profile.as_video_stream_profile()
-                            channels.append(CameraChannel(
-                                name="color",
-                                default_width=vp.width(),
-                                default_height=vp.height(),
-                                default_fps=vp.fps(),
-                                pixel_format="rgb24",
-                                description="RGB Color stream"))
-                        elif stream_type == rs.stream.depth and not any(
-                                c.name == "depth" for c in channels):
-                            vp = profile.as_video_stream_profile()
-                            channels.append(CameraChannel(
-                                name="depth",
-                                default_width=vp.width(),
-                                default_height=vp.height(),
-                                default_fps=vp.fps(),
-                                pixel_format="z16",
-                                description="Depth stream (16-bit mm)"))
-                        elif stream_type == rs.stream.infrared and not has_infrared:
-                            vp = profile.as_video_stream_profile()
-                            channels.append(CameraChannel(
-                                name="infrared",
-                                default_width=vp.width(),
-                                default_height=vp.height(),
-                                default_fps=vp.fps(),
-                                pixel_format="y8",
-                                description="Infrared stream"))
-                            has_infrared = True
+                        vp = profile.as_video_stream_profile()
+                        fmt = str(vp.format()).replace("format.", "")
 
-                # Get default resolution from color stream
-                w, h, fps = 640, 480, 30
-                for ch in channels:
-                    if ch.name == "color":
-                        w, h, fps = ch.default_width, ch.default_height, ch.default_fps
-                        break
+                        # Color - prefer bgr8 format
+                        if stream_type == rs.stream.color and "color" not in channel_info:
+                            if fmt == "bgr8":
+                                channel_info["color"] = (vp.width(), vp.height(), vp.fps(), "bgr8")
+                        # Depth - prefer z16 format
+                        elif stream_type == rs.stream.depth and "depth" not in channel_info:
+                            if fmt == "z16":
+                                channel_info["depth"] = (vp.width(), vp.height(), vp.fps(), "z16")
+                        # Infrared - prefer y8 format (8-bit grayscale)
+                        elif stream_type == rs.stream.infrared and "infrared" not in channel_info:
+                            if fmt == "y8":
+                                channel_info["infrared"] = (vp.width(), vp.height(), vp.fps(), "y8")
 
-                found.append(DetectedDevice(
-                    kind="camera",
-                    dtype=cls.SENSOR_TYPE,
-                    device_id=sn,
-                    label=f"RealSense {name} (SN:{sn})",
-                    properties={"width": w, "height": h, "fps": fps},
-                    formats=cls.probe_formats(sn),
-                    id_path="",
-                    channels=channels))
+                # Create a separate DetectedDevice for each channel
+                for ch_name, (w, h, fps, pf) in channel_info.items():
+                    # Device ID encodes serial:channel for unique identification
+                    device_id = f"{sn}:{ch_name}"
+
+                    # Probe formats for this specific channel
+                    formats = cls.probe_channel_formats(sn, ch_name)
+
+                    # Channel type for display
+                    ch_label = {"color": "RGB", "depth": "Depth", "infrared": "IR"}[ch_name]
+
+                    found.append(DetectedDevice(
+                        kind="camera",
+                        dtype=f"realsense_{ch_name}",  # e.g., "realsense_color"
+                        device_id=device_id,
+                        label=f"RealSense {ch_label} - {name} (SN:{sn})",
+                        properties={
+                            "channel": ch_name,
+                            "serial": sn,
+                        },
+                        formats=formats,
+                        id_path="",
+                        channels=[CameraChannel(
+                            name=ch_name,
+                            default_width=w,
+                            default_height=h,
+                            default_fps=fps,
+                            pixel_format=pf)],
+                        width=w,
+                        height=h,
+                        fps=fps,
+                        pixel_format=pf))
         except Exception:
             pass
         return found
 
     @classmethod
     def probe_formats(cls, device_id: int | str) -> list[CameraFormat]:
-        """Probe available formats for a RealSense device."""
+        """Probe available formats for all channels of a RealSense device.
+
+        Returns formats for color, depth, and infrared channels.
+        """
+        return cls.probe_channel_formats(device_id, channel=None)
+
+    @classmethod
+    def probe_channel_formats(cls, device_id: int | str,
+                               channel: str | None = None) -> list[CameraFormat]:
+        """Probe available formats for a specific channel or all channels.
+
+        Parameters
+        ----------
+        device_id : int | str
+            RealSense serial number.
+        channel : str | None
+            Channel name ("color", "depth", "infrared") or None for all.
+
+        Returns list of CameraFormat for the requested channel(s).
+        """
         formats: list[CameraFormat] = []
         try:
             rs = _ensure_rs()
@@ -122,24 +146,45 @@ class RealSenseCamera(ImageSensor):
                 if str(sn) != str(device_id):
                     continue
 
-                # Collect color stream formats
-                color_modes: list[CameraMode] = []
-                for sensor in dev.query_sensors():
-                    for profile in sensor.get_stream_profiles():
-                        if profile.stream_type() == rs.stream.color:
-                            vp = profile.as_video_stream_profile()
-                            mode = CameraMode(vp.width(), vp.height(), vp.fps())
-                            if mode not in color_modes:
-                                color_modes.append(mode)
+                # Map channel names to stream types
+                stream_map = {
+                    "color": rs.stream.color,
+                    "depth": rs.stream.depth,
+                    "infrared": rs.stream.infrared,
+                }
 
-                if color_modes:
-                    # Sort by resolution (largest first), then fps
-                    color_modes.sort(
-                        key=lambda m: (m.width * m.height, m.fps), reverse=True)
-                    formats.append(CameraFormat(
-                        fourcc="RGB",
-                        description="RGB Color",
-                        modes=color_modes))
+                channels_to_probe = [channel] if channel else ["color", "depth", "infrared"]
+
+                for ch_name in channels_to_probe:
+                    stream_type = stream_map.get(ch_name)
+                    if stream_type is None:
+                        continue
+
+                    # Collect modes and formats for this channel
+                    format_modes: dict[str, list[CameraMode]] = {}
+
+                    for sensor in dev.query_sensors():
+                        for profile in sensor.get_stream_profiles():
+                            if profile.stream_type() != stream_type:
+                                continue
+                            vp = profile.as_video_stream_profile()
+                            fmt_name = str(vp.format()).replace("format.", "")
+                            mode = CameraMode(vp.width(), vp.height(), vp.fps())
+
+                            if fmt_name not in format_modes:
+                                format_modes[fmt_name] = []
+                            if mode not in format_modes[fmt_name]:
+                                format_modes[fmt_name].append(mode)
+
+                    # Create CameraFormat for each pixel format
+                    for fmt_name, modes in format_modes.items():
+                        modes.sort(key=lambda m: (m.width * m.height, m.fps), reverse=True)
+                        # Use channel name in description for clarity
+                        desc = f"{ch_name.capitalize()} ({fmt_name})"
+                        formats.append(CameraFormat(
+                            fourcc=fmt_name,
+                            description=desc,
+                            modes=modes))
                 break
         except Exception:
             pass
@@ -162,7 +207,16 @@ class RealSenseCamera(ImageSensor):
                  width: int = 640, height: int = 480, fps: int = 30,
                  enable_color: bool = True,
                  enable_depth: bool = True,
-                 enable_infrared: bool = False) -> None:
+                 enable_infrared: bool = False,
+                 depth_width: int | None = None,
+                 depth_height: int | None = None,
+                 depth_fps: int | None = None,
+                 ir_width: int | None = None,
+                 ir_height: int | None = None,
+                 ir_fps: int | None = None,
+                 depth_format: str = "z16",
+                 ir_format: str = "y8",
+                 preview_channel: str = "color") -> None:
         """Initialize RealSense camera.
 
         Args:
@@ -170,10 +224,15 @@ class RealSenseCamera(ImageSensor):
             device: Serial number of the RealSense device
             width: Resolution width for color stream
             height: Resolution height for color stream
-            fps: Target framerate
+            fps: Target framerate for color stream
             enable_color: Enable RGB color stream
             enable_depth: Enable depth stream
             enable_infrared: Enable infrared stream
+            depth_width/height/fps: Override resolution for depth stream
+            ir_width/height/fps: Override resolution for infrared stream
+            depth_format: Pixel format for depth ("z16")
+            ir_format: Pixel format for infrared ("y8" or "y16")
+            preview_channel: Which channel to return from read() ("color", "depth", "infrared")
         """
         self._name = name
         self._serial = str(device)
@@ -184,6 +243,19 @@ class RealSenseCamera(ImageSensor):
         self._enable_depth = enable_depth
         self._enable_infrared = enable_infrared
 
+        # Per-channel resolution (defaults to main resolution)
+        self._depth_width = depth_width or width
+        self._depth_height = depth_height or height
+        self._depth_fps = depth_fps or fps
+        self._ir_width = ir_width or width
+        self._ir_height = ir_height or height
+        self._ir_fps = ir_fps or fps
+
+        # Per-channel pixel format
+        self._depth_format = depth_format
+        self._ir_format = ir_format
+
+        self._preview_channel = preview_channel
         self._pipeline = None
         self._config = None
         self._align = None  # For aligning depth to color
@@ -199,22 +271,33 @@ class RealSenseCamera(ImageSensor):
         # Enable device by serial number
         self._config.enable_device(self._serial)
 
-        # Configure streams
+        # Map format strings to rs.format enum
+        format_map = {
+            "bgr8": rs.format.bgr8,
+            "rgb8": rs.format.rgb8,
+            "z16": rs.format.z16,
+            "y8": rs.format.y8,
+            "y16": rs.format.y16,
+        }
+
+        # Configure streams with per-channel resolution
         if self._enable_color:
             self._config.enable_stream(
                 rs.stream.color, self._width, self._height,
                 rs.format.bgr8, self._fps)
 
         if self._enable_depth:
+            depth_fmt = format_map.get(self._depth_format, rs.format.z16)
             self._config.enable_stream(
-                rs.stream.depth, self._width, self._height,
-                rs.format.z16, self._fps)
+                rs.stream.depth, self._depth_width, self._depth_height,
+                depth_fmt, self._depth_fps)
 
         if self._enable_infrared:
+            ir_fmt = format_map.get(self._ir_format, rs.format.y8)
             self._config.enable_stream(
                 rs.stream.infrared, 1,  # index 1 = left IR
-                self._width, self._height,
-                rs.format.y8, self._fps)
+                self._ir_width, self._ir_height,
+                ir_fmt, self._ir_fps)
 
         # Start pipeline
         profile = self._pipeline.start(self._config)
@@ -234,13 +317,13 @@ class RealSenseCamera(ImageSensor):
     def read(self) -> tuple[float, np.ndarray]:
         """Read frames from the camera.
 
-        Returns the color frame as the primary output.
+        Returns the frame for the current preview channel.
         Use read_all() to get all enabled streams.
         """
         ts = monotonic_sec()
 
         if self._pipeline is None:
-            return ts, np.zeros((self._height, self._width, 3), np.uint8)
+            return ts, self._empty_frame()
 
         try:
             rs = _ensure_rs()
@@ -269,14 +352,65 @@ class RealSenseCamera(ImageSensor):
                     self._last_frames["infrared"] = np.asanyarray(
                         ir_frame.get_data())
 
-            # Return color frame as primary (or zeros if not enabled)
-            if "color" in self._last_frames:
-                return ts, self._last_frames["color"]
-            else:
-                return ts, np.zeros((self._height, self._width, 3), np.uint8)
+            # Return the selected preview channel
+            return ts, self._get_preview_frame()
 
         except Exception:
-            return ts, np.zeros((self._height, self._width, 3), np.uint8)
+            return ts, self._empty_frame()
+
+    def _empty_frame(self) -> np.ndarray:
+        """Return an empty frame for the current preview channel."""
+        ch = self._preview_channel
+        if ch == "depth":
+            return np.zeros((self._depth_height, self._depth_width), np.uint16)
+        elif ch == "infrared":
+            # Use uint16 for y16 format, uint8 for y8
+            dtype = np.uint16 if self._ir_format == "y16" else np.uint8
+            return np.zeros((self._ir_height, self._ir_width), dtype)
+        else:
+            return np.zeros((self._height, self._width, 3), np.uint8)
+
+    def _get_preview_frame(self) -> np.ndarray:
+        """Get the frame for the current preview channel."""
+        ch = self._preview_channel
+        if ch in self._last_frames:
+            return self._last_frames[ch]
+        # Fallback to color or first available
+        for fallback in ["color", "depth", "infrared"]:
+            if fallback in self._last_frames:
+                return self._last_frames[fallback]
+        return self._empty_frame()
+
+    @property
+    def preview_channel(self) -> str:
+        """Current preview channel name."""
+        return self._preview_channel
+
+    @preview_channel.setter
+    def preview_channel(self, value: str) -> None:
+        """Set the preview channel."""
+        if value in ("color", "depth", "infrared"):
+            self._preview_channel = value
+
+    def get_channel_resolution(self, channel: str) -> tuple[int, int, int]:
+        """Get (width, height, fps) for a specific channel."""
+        if channel == "color":
+            return self._width, self._height, self._fps
+        elif channel == "depth":
+            return self._depth_width, self._depth_height, self._depth_fps
+        elif channel == "infrared":
+            return self._ir_width, self._ir_height, self._ir_fps
+        return 0, 0, 0
+
+    def is_channel_enabled(self, channel: str) -> bool:
+        """Check if a channel is enabled."""
+        if channel == "color":
+            return self._enable_color
+        elif channel == "depth":
+            return self._enable_depth
+        elif channel == "infrared":
+            return self._enable_infrared
+        return False
 
     def read_all(self) -> tuple[float, dict[str, np.ndarray]]:
         """Read all enabled streams.

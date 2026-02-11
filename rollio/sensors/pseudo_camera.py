@@ -36,7 +36,7 @@ class PseudoCamera(ImageSensor):
             dtype=cls.SENSOR_TYPE,
             device_id=0,
             label="Pseudo Camera (test pattern)",
-            properties={"width": 640, "height": 480, "fps": 30},
+            properties={},
             formats=[CameraFormat(
                 fourcc="RGB",
                 description="RGB24",
@@ -51,7 +51,11 @@ class PseudoCamera(ImageSensor):
                 default_width=640,
                 default_height=480,
                 default_fps=30,
-                description="Synthetic RGB pattern")])]
+                description="Synthetic RGB pattern")],
+            width=640,
+            height=480,
+            fps=30,
+            pixel_format="RGB")]
 
     @classmethod
     def probe_formats(cls, device_id: int | str) -> list[CameraFormat]:

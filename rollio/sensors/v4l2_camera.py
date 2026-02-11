@@ -199,12 +199,21 @@ class V4L2Camera(ImageSensor):
                     formats = probe_v4l2_formats(idx)
                     id_path = _get_udev_id_path(vdev)
 
+                    # Determine default pixel format (prefer MJPG if available)
+                    pix_fmt = "MJPG"
+                    if formats:
+                        pix_fmt = formats[0].fourcc
+                        for fmt in formats:
+                            if fmt.fourcc == "MJPG":
+                                pix_fmt = "MJPG"
+                                break
+
                     found.append(DetectedDevice(
                         kind="camera",
                         dtype=cls.SENSOR_TYPE,
                         device_id=idx,
                         label=f"USB Camera {vdev} ({w}×{h}@{fps}fps)",
-                        properties={"width": w, "height": h, "fps": fps},
+                        properties={},
                         formats=formats,
                         id_path=id_path,
                         channels=[CameraChannel(
@@ -212,7 +221,11 @@ class V4L2Camera(ImageSensor):
                             default_width=w,
                             default_height=h,
                             default_fps=fps,
-                            description="RGB Color stream")]))
+                            description="RGB Color stream")],
+                        width=w,
+                        height=h,
+                        fps=fps,
+                        pixel_format=pix_fmt))
                 else:
                     cap.release()
             except Exception:

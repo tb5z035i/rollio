@@ -3,7 +3,7 @@ description: ''
 fps: 30
 mode: teleop
 cameras:
-- name: cam_1
+- name: left_hand
   type: v4l2
   device: 0
   width: 1280
@@ -11,8 +11,9 @@ cameras:
   fps: 30
   pixel_format: MJPG
   id_path: pci-0000:af:00.0-usb-0:4:1.0
+  channel: color
   channels: []
-- name: cam_2
+- name: right_hand
   type: v4l2
   device: 2
   width: 1280
@@ -20,15 +21,27 @@ cameras:
   fps: 30
   pixel_format: MJPG
   id_path: pci-0000:af:00.0-usb-0:5:1.0
+  channel: color
   channels: []
-- name: cam_3
+- name: chest_depth
   type: realsense
-  device: '335522070371'
-  width: 1920
-  height: 1080
-  fps: 30
-  pixel_format: RGB
+  device: 335522070371:depth
+  width: 640
+  height: 480
+  fps: 60
+  pixel_format: z16
   id_path: ''
+  channel: depth
+  channels: []
+- name: chest_rgb
+  type: realsense
+  device: 335522070371:color
+  width: 848
+  height: 480
+  fps: 60
+  pixel_format: rgb8
+  id_path: ''
+  channel: color
   channels: []
 robots:
 - name: arm_0
