@@ -21,9 +21,11 @@ import numpy as np
 from rollio.config.schema import (
     CameraConfig, ControlConfig, RobotConfig, RollioConfig, StorageConfig,
 )
+from rollio.sensors.base import CameraFormat, CameraMode
 from rollio.sensors.pseudo_camera import PseudoCamera
 from rollio.sensors.pseudo_robot import PseudoRobot
 from rollio.sensors.scanner import DetectedDevice, scan_cameras, scan_robots
+from rollio.sensors.v4l2_camera import V4L2Camera
 from rollio.tui.renderer import (
     RENDER_MODES, MODE_LABELS, blit_frame, calc_render_size, render_frame,
 )
@@ -80,31 +82,34 @@ class _Term:
 #  Helper: open a temp sensor for preview
 # ═══════════════════════════════════════════════════════════════════════
 
-def _make_camera(dev: DetectedDevice) -> PseudoCamera | None:
-    """Instantiate a camera sensor from a DetectedDevice for preview."""
+def _make_camera(dev: DetectedDevice,
+                 width: int | None = None,
+                 height: int | None = None,
+                 fps: int | None = None,
+                 pixel_format: str | None = None) -> PseudoCamera | V4L2Camera | None:
+    """Instantiate a camera sensor from a DetectedDevice for preview.
+
+    If width/height/fps/pixel_format are provided, use them; otherwise
+    use device defaults.
+    """
+    w = width or dev.properties.get("width", 640)
+    h = height or dev.properties.get("height", 480)
+    f = fps or dev.properties.get("fps", 30)
+
     if dev.dtype == "pseudo":
-        cam = PseudoCamera(
-            name="preview", width=dev.properties.get("width", 640),
-            height=dev.properties.get("height", 480),
-            fps=dev.properties.get("fps", 30))
+        cam = PseudoCamera(name="preview", width=w, height=h, fps=f)
         cam.open()
         return cam
     elif dev.dtype == "v4l2":
-        # Reuse PseudoCamera for now; real v4l2 would use cv2.VideoCapture
-        # but we don't have V4L2Camera implemented yet — fall back to
-        # attempting a real capture for preview
+        pf = pixel_format or "MJPG"
         try:
-            cap = cv2.VideoCapture(int(dev.device_id))
-            if cap.isOpened():
-                # Wrap in a simple adapter
-                class _V4L2Preview:
-                    def read(self):
-                        from rollio.utils.time import monotonic_sec
-                        ret, f = cap.read()
-                        return monotonic_sec(), f if ret else np.zeros(
-                            (480, 640, 3), np.uint8)
-                    def close(self): cap.release()
-                return _V4L2Preview()  # type: ignore
+            cam = V4L2Camera(
+                name="preview",
+                device=dev.device_id,
+                width=w, height=h, fps=f,
+                pixel_format=pf)
+            cam.open()
+            return cam
         except Exception:
             pass
     return None
@@ -160,56 +165,271 @@ def _prompt_line(term: _Term, out, row: int, col: int,
             buf.append(key)
 
 
+def _pick_format(term: _Term, out, formats: list[CameraFormat],
+                 current_idx: int, W: int, H: int) -> int | None:
+    """Display format picker.
+
+    Returns selected index, or None if cancelled (Esc).
+    """
+    if not formats:
+        return None
+
+    while True:
+        buf = io.BytesIO()
+        buf.write(b"\x1b[2J\x1b[H")
+
+        # Header
+        buf.write(f"\x1b[1;1H\x1b[48;5;24m\x1b[97;1m{'  SELECT FORMAT  ':<{W}}\x1b[0m".encode())
+
+        # Instructions
+        _draw_text(buf, 3, 2,
+                   f"Enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel")
+
+        # List formats
+        start_row = 5
+        for idx, fmt in enumerate(formats):
+            is_cur = (idx == current_idx)
+            num_str = f"{idx + 1}"
+            n_modes = len(fmt.modes)
+            if is_cur:
+                text = (f"\x1b[1;92m[{num_str}] {fmt.fourcc}\x1b[0m "
+                        f"\x1b[90m({fmt.description}, {n_modes} modes)\x1b[0m")
+            else:
+                text = (f"\x1b[33m[{num_str}]\x1b[0m {fmt.fourcc} "
+                        f"\x1b[90m({fmt.description}, {n_modes} modes)\x1b[0m")
+            _draw_text(buf, start_row + idx, 4, text)
+
+        out.write(_SY_S + buf.getvalue() + _SY_E)
+        out.flush()
+
+        key = term.read_key_blocking(0.05)
+        if key is None:
+            continue
+        elif key == "\x1b":  # Escape
+            return None
+        elif key.isdigit():
+            try:
+                sel = int(key) - 1
+                if 0 <= sel < len(formats):
+                    return sel
+            except ValueError:
+                pass
+
+
+def _pick_resolution(term: _Term, out, modes: list[CameraMode],
+                     current_idx: int, W: int, H: int) -> int | None:
+    """Display resolution picker grid.
+
+    Each item is a separate W×H@FPS tuplet (standard v4l2 form).
+    Returns selected index, or None if cancelled (Esc).
+    """
+    # Sort modes: by resolution (largest first), then by FPS (highest first)
+    sorted_modes = sorted(modes,
+                          key=lambda m: (m.width * m.height, m.fps),
+                          reverse=True)
+
+    # Build display items: (idx_in_original_modes, display_str, is_current)
+    items: list[tuple[int, str, bool]] = []
+    for m in sorted_modes:
+        orig_idx = modes.index(m)
+        is_cur = (orig_idx == current_idx)
+        display = f"{m.width}×{m.height}@{m.fps}"
+        items.append((orig_idx, display, is_cur))
+
+    # Calculate grid layout
+    max_item_w = max(len(it[1]) for it in items) + 6  # "[NN] " + padding
+    cols = max(1, (W - 4) // max_item_w)
+    rows = (len(items) + cols - 1) // cols
+
+    input_buf = ""
+    scroll_offset = 0
+    visible_rows = max(4, H - 8)
+
+    while True:
+        buf = io.BytesIO()
+        buf.write(b"\x1b[2J\x1b[H")
+
+        # Header
+        buf.write(f"\x1b[1;1H\x1b[48;5;24m\x1b[97;1m{'  SELECT RESOLUTION  ':<{W}}\x1b[0m".encode())
+
+        # Instructions
+        _draw_text(buf, 3, 2,
+                   f"Enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel")
+        _draw_text(buf, 4, 2,
+                   f"Input: \x1b[1;97m{input_buf}\x1b[5m_\x1b[0m")
+
+        # Grid
+        start_row = 6
+        for row_i in range(min(visible_rows, rows - scroll_offset)):
+            actual_row = row_i + scroll_offset
+            y = start_row + row_i
+            for col_i in range(cols):
+                idx = actual_row * cols + col_i
+                if idx >= len(items):
+                    break
+                mode_idx_val, display, is_cur = items[idx]
+                x = 2 + col_i * max_item_w
+
+                num_str = f"{idx + 1:>2}"
+                if is_cur:
+                    # Highlight current selection
+                    text = f"\x1b[1;92m[{num_str}] {display}\x1b[0m"
+                else:
+                    text = f"\x1b[33m[{num_str}]\x1b[0m {display}"
+                _draw_text(buf, y, x, text)
+
+        # Scroll indicator
+        if rows > visible_rows:
+            _draw_text(buf, start_row + visible_rows, 2,
+                       f"\x1b[90m({scroll_offset + 1}-{min(scroll_offset + visible_rows, rows)}"
+                       f" of {rows} rows, ↑/↓ to scroll)\x1b[0m")
+
+        out.write(_SY_S + buf.getvalue() + _SY_E)
+        out.flush()
+
+        key = term.read_key_blocking(0.05)
+        if key is None:
+            continue
+        elif key == "\x1b":  # Escape
+            return None
+        elif key == "\n" or key == "\r":
+            # Try to parse input
+            if input_buf:
+                try:
+                    sel = int(input_buf) - 1
+                    if 0 <= sel < len(items):
+                        return items[sel][0]  # Return mode index
+                except ValueError:
+                    pass
+            input_buf = ""  # Clear on invalid
+        elif key == "\x7f" or key == "\x08":  # Backspace
+            input_buf = input_buf[:-1]
+        elif key.isdigit():
+            input_buf += key
+        elif key == "[" and scroll_offset > 0:  # Scroll up ([ key)
+            scroll_offset = max(0, scroll_offset - 1)
+        elif key == "]" and scroll_offset < rows - visible_rows:  # Scroll down (] key)
+            scroll_offset = min(rows - visible_rows, scroll_offset + 1)
+
+
 def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                     ) -> list[CameraConfig]:
     """Camera identification screen — live preview + name prompt."""
     configs: list[CameraConfig] = []
     total_steps = 3
 
-    mode_idx = 1   # start at "16" (lower bandwidth than 256)
+    mode_idx = 0   # start at "true" (24-bit truecolor)
     show_debug = False
     _t_prev = time.monotonic()
     _fps = 0.0
 
     for i, dev in enumerate(devices):
-        cam = _make_camera(dev)
+        # Get available formats for this device
+        formats = dev.formats if dev.formats else []
+        format_idx = 0
+        mode_sel_idx = 0  # selected mode within current format
+
+        # Current camera settings
+        cur_width = dev.properties.get("width", 640)
+        cur_height = dev.properties.get("height", 480)
+        cur_fps = dev.properties.get("fps", 30)
+        cur_format = "MJPG" if dev.dtype == "v4l2" else "RGB"
+
+        # Try to find MJPG format as default (usually better for USB cameras)
+        for fi, fmt in enumerate(formats):
+            if fmt.fourcc == "MJPG":
+                format_idx = fi
+                if fmt.modes:
+                    # Find a reasonable default mode (640x480 or closest)
+                    for mi, m in enumerate(fmt.modes):
+                        if m.width == 640 and m.height == 480:
+                            mode_sel_idx = mi
+                            cur_width, cur_height, cur_fps = m.width, m.height, m.fps
+                            break
+                    else:
+                        mode_sel_idx = 0
+                        m = fmt.modes[0]
+                        cur_width, cur_height, cur_fps = m.width, m.height, m.fps
+                cur_format = fmt.fourcc
+                break
+
+        cam = _make_camera(dev, cur_width, cur_height, cur_fps, cur_format)
         chosen_name: str | None = None
         default_name = f"cam_{i}"
         phase = "preview"          # "preview" → "name" → accepted
         _needs_clear = True
+        _needs_reopen = False
 
         while chosen_name is None:
+            # Reopen camera if settings changed
+            if _needs_reopen:
+                if cam:
+                    cam.close()
+                cam = _make_camera(dev, cur_width, cur_height, cur_fps, cur_format)
+                _needs_reopen = False
+                _needs_clear = True
+
             W, H = term.cols, term.rows
 
             # Build entire frame into a buffer, then write atomically
-            # to avoid flicker (same strategy as the collection loop).
             buf = io.BytesIO()
 
             # Header
             _draw_header(buf, W, 1, total_steps, "Cameras")
 
             # Device info
-            mode = RENDER_MODES[mode_idx]
+            render_mode = RENDER_MODES[mode_idx]
             _draw_text(buf, 3, 2,
                        f"Camera {i+1}/{len(devices)}: "
                        f"\x1b[96m{dev.label}\x1b[0m  "
-                       f"\x1b[90m[{MODE_LABELS[mode]}]\x1b[0m")
+                       f"\x1b[90m[{MODE_LABELS[render_mode]}]\x1b[0m")
             _draw_text(buf, 4, 2,
                        f"Type: {dev.dtype}  Device: {dev.device_id}")
+            settings_row = 5
+            if dev.id_path:
+                # Truncate id_path if too long
+                id_path_display = dev.id_path if len(dev.id_path) <= W - 14 else dev.id_path[:W - 17] + "..."
+                _draw_text(buf, settings_row, 2,
+                           f"\x1b[90mID_PATH: {id_path_display}\x1b[0m")
+                settings_row += 1
 
-            # Live preview — fixed 480p resolution, aspect preserved
-            cam_w = dev.properties.get("width", 640)
-            cam_h = dev.properties.get("height", 480)
-            preview_y = 6
-            avail_h = max(4, H - 14)
+            # Format/mode selection (only for v4l2)
+            if formats and dev.dtype == "v4l2":
+                cur_fmt = formats[format_idx] if format_idx < len(formats) else None
+                modes = cur_fmt.modes if cur_fmt else []
+
+                # Format selector
+                fmt_str = cur_fmt.fourcc if cur_fmt else "N/A"
+                fmt_desc = cur_fmt.description if cur_fmt else ""
+                _draw_text(buf, settings_row, 2,
+                           f"\x1b[33m[f]\x1b[0m Format: "
+                           f"\x1b[1;97m{fmt_str}\x1b[0m "
+                           f"\x1b[90m({fmt_desc})\x1b[0m")
+
+                # Mode selector
+                if modes and mode_sel_idx < len(modes):
+                    cur_mode = modes[mode_sel_idx]
+                    mode_str = f"{cur_mode.width}×{cur_mode.height}@{cur_mode.fps}fps"
+                else:
+                    mode_str = f"{cur_width}×{cur_height}@{cur_fps}fps"
+                _draw_text(buf, settings_row + 1, 2,
+                           f"\x1b[33m[r]\x1b[0m Resolution: "
+                           f"\x1b[1;97m{mode_str}\x1b[0m "
+                           f"\x1b[90m({len(modes)} available)\x1b[0m")
+                settings_row += 2
+
+            # Live preview
+            preview_y = settings_row + 1
+            avail_h = max(4, H - preview_y - 5)
             avail_w = W - 4
             preview_w, preview_h = calc_render_size(
-                cam_w, cam_h, avail_w, avail_h)
+                cur_width, cur_height, avail_w, avail_h)
+
             if cam is not None:
                 _, frame = cam.read()
                 if frame is not None:
                     rendered = render_frame(
-                        frame, preview_w, preview_h, mode)
+                        frame, preview_w, preview_h, render_mode)
                     buf.write(blit_frame(rendered, preview_y, 3))
             else:
                 _draw_text(buf, preview_y, 3, "(no preview available)")
@@ -217,14 +437,16 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
             prompt_row = preview_y + preview_h + 1
 
             if phase == "preview":
-                # Live-preview phase: camera refreshes every iteration,
-                # shortcut keys are handled directly (not inside _prompt_line).
-                _draw_text(buf, prompt_row, 2,
-                           "\x1b[33m[Enter]\x1b[0m name  "
-                           "\x1b[33m[s]\x1b[0m skip  "
-                           "\x1b[33m[m]\x1b[0m mode  "
-                           "\x1b[33m[\\]\x1b[0m debug  "
-                           "\x1b[33m[Esc/q]\x1b[0m quit")
+                # Live-preview phase
+                controls = ("\x1b[33m[Enter]\x1b[0m name  "
+                            "\x1b[33m[s]\x1b[0m skip  "
+                            "\x1b[33m[m]\x1b[0m color  ")
+                if formats and dev.dtype == "v4l2":
+                    controls += ("\x1b[33m[f]\x1b[0m format  "
+                                 "\x1b[33m[r]\x1b[0m res  ")
+                controls += ("\x1b[33m[\\]\x1b[0m debug  "
+                             "\x1b[33m[Esc/q]\x1b[0m quit")
+                _draw_text(buf, prompt_row, 2, controls)
 
                 # FPS tracking
                 _t_now = time.monotonic()
@@ -254,6 +476,31 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                     break               # skip this camera
                 elif key == "m":
                     mode_idx = (mode_idx + 1) % len(RENDER_MODES)
+                elif key == "f" and formats and dev.dtype == "v4l2":
+                    # Open format picker
+                    selected = _pick_format(term, out, formats, format_idx, W, H)
+                    if selected is not None:
+                        format_idx = selected
+                        mode_sel_idx = 0
+                        cur_fmt = formats[format_idx]
+                        cur_format = cur_fmt.fourcc
+                        if cur_fmt.modes:
+                            m = cur_fmt.modes[0]
+                            cur_width, cur_height, cur_fps = m.width, m.height, m.fps
+                        _needs_reopen = True
+                    _needs_clear = True
+                elif key == "r" and formats and dev.dtype == "v4l2":
+                    # Open resolution picker
+                    cur_fmt = formats[format_idx] if format_idx < len(formats) else None
+                    if cur_fmt and cur_fmt.modes:
+                        selected = _pick_resolution(
+                            term, out, cur_fmt.modes, mode_sel_idx, W, H)
+                        if selected is not None:
+                            mode_sel_idx = selected
+                            m = cur_fmt.modes[mode_sel_idx]
+                            cur_width, cur_height, cur_fps = m.width, m.height, m.fps
+                            _needs_reopen = True
+                        _needs_clear = True
                 elif key == "\\":
                     show_debug = not show_debug
                 elif key == "q" or key == "\x1b":
@@ -267,7 +514,7 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                     time.sleep(0.016 - _el)
 
             elif phase == "name":
-                # Name-input phase: hand off to _prompt_line for text editing.
+                # Name-input phase
                 _draw_text(buf, prompt_row + 1, 2,
                            "\x1b[33m[Enter]\x1b[0m accept  "
                            "\x1b[33m[Esc]\x1b[0m back to preview")
@@ -281,7 +528,7 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                     "Channel name: ", default_name)
 
                 if result is None:
-                    phase = "preview"   # back to live preview
+                    phase = "preview"
                     _needs_clear = True
                 else:
                     chosen_name = result
@@ -294,9 +541,11 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                 name=chosen_name,
                 type=dev.dtype,
                 device=dev.device_id,
-                width=dev.properties.get("width", 640),
-                height=dev.properties.get("height", 480),
-                fps=dev.properties.get("fps", 30),
+                width=cur_width,
+                height=cur_height,
+                fps=cur_fps,
+                pixel_format=cur_format,
+                id_path=dev.id_path,
             ))
 
     return configs
@@ -491,26 +740,30 @@ def _screen_summary(term: _Term, out,
 
     Returns True to save, False to cancel.
     """
-    # Build sensors from configs - match by device_id first, then by type
+    # Build sensors from configs - match by (device_id + type) to ensure correct pairing
     # Track which devices have been used to avoid double-matching
-    cam_sensors = []
+    # Store (config, sensor, device) tuples for camera setting changes
+    cam_sensors: list[tuple[CameraConfig, any, DetectedDevice | None]] = []
     used_cam_devs: set[int] = set()
     for cc in cam_configs:
         sensor = None
-        # First try exact device_id match
+        matched_dev = None
+        # Match by both device_id AND type for exact pairing
         for di, d in enumerate(cam_devs):
-            if di not in used_cam_devs and str(d.device_id) == str(cc.device):
-                sensor = _make_camera(d)
+            if di not in used_cam_devs and str(d.device_id) == str(cc.device) and d.dtype == cc.type:
+                sensor = _make_camera(d, cc.width, cc.height, cc.fps, cc.pixel_format)
+                matched_dev = d
                 used_cam_devs.add(di)
                 break
-        # Fallback: match by type if no device match
+        # Fallback: match by type only if exact match not found
         if sensor is None:
             for di, d in enumerate(cam_devs):
                 if di not in used_cam_devs and d.dtype == cc.type:
-                    sensor = _make_camera(d)
+                    sensor = _make_camera(d, cc.width, cc.height, cc.fps, cc.pixel_format)
+                    matched_dev = d
                     used_cam_devs.add(di)
                     break
-        cam_sensors.append((cc, sensor))
+        cam_sensors.append((cc, sensor, matched_dev))
 
     rob_sensors = []
     used_rob_devs: set[int] = set()
@@ -523,12 +776,14 @@ def _screen_summary(term: _Term, out,
                 break
         rob_sensors.append((rc, sensor))
 
-    mode_idx = 2  # "gray" mode for compact previews
+    mode_idx = 0  # "true" (24-bit truecolor) for best preview quality
     show_debug = False
     _t_prev = time.monotonic()
     _fps = 0.0
     result = None
     _needs_clear = True
+    selected_cam = 0 if cam_sensors else -1  # Currently selected camera for editing
+    _needs_reopen: set[int] = set()  # Camera indices that need reopening
 
     def _draw_text_clear(buf, row: int, col: int, text: str, clear_w: int = 0):
         """Draw text and clear to specified width or end of line."""
@@ -543,6 +798,20 @@ def _screen_summary(term: _Term, out,
 
     try:
         while result is None:
+            # Reopen cameras if needed
+            for ci in list(_needs_reopen):
+                cc, old_sensor, dev = cam_sensors[ci]
+                if old_sensor:
+                    try:
+                        old_sensor.close()
+                    except Exception:
+                        pass
+                new_sensor = _make_camera(dev, cc.width, cc.height, cc.fps,
+                                          cc.pixel_format) if dev else None
+                cam_sensors[ci] = (cc, new_sensor, dev)
+                _needs_reopen.discard(ci)
+                _needs_clear = True
+
             W, H = term.cols, term.rows
             buf = io.BytesIO()
 
@@ -575,15 +844,29 @@ def _screen_summary(term: _Term, out,
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
             row += 1
             _draw_text_clear(buf, row, 2,
-                             f"│ \x1b[1;96mCameras ({len(cam_configs)})\x1b[0m",
+                             f"│ \x1b[1;96mCameras ({len(cam_configs)})\x1b[0m "
+                             f"\x1b[90m[1-{len(cam_configs)}] select\x1b[0m"
+                             if cam_configs else
+                             f"│ \x1b[1;96mCameras (0)\x1b[0m",
                              info_w)
             row += 1
-            for ci, (cc, _) in enumerate(cam_sensors):
+            for ci, (cc, _, dev) in enumerate(cam_sensors):
+                is_sel = (ci == selected_cam)
+                sel_mark = "\x1b[97;1m▸\x1b[0m" if is_sel else " "
+                highlight = "\x1b[97;1;44m" if is_sel else "\x1b[96m"
+                fmt_info = f"{cc.pixel_format or ''} " if cc.pixel_format else ""
                 _draw_text_clear(buf, row, 2,
-                                 f"│  \x1b[96m{cc.name[:12]:<12}\x1b[0m "
-                                 f"\x1b[90m{cc.type} {cc.width}×{cc.height}\x1b[0m",
+                                 f"│ {sel_mark}{ci+1}.{highlight}{cc.name[:10]:<10}\x1b[0m "
+                                 f"\x1b[90m{fmt_info}{cc.width}×{cc.height}@{cc.fps or '?'}\x1b[0m",
                                  info_w)
                 row += 1
+                # Show id_path if available (truncated)
+                if cc.id_path:
+                    id_path_trunc = cc.id_path[:info_w - 8] if len(cc.id_path) > info_w - 8 else cc.id_path
+                    _draw_text_clear(buf, row, 2,
+                                     f"│    \x1b[90m{id_path_trunc}\x1b[0m",
+                                     info_w)
+                    row += 1
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
             row += 1
             _draw_text_clear(buf, row, 2,
@@ -629,7 +912,8 @@ def _screen_summary(term: _Term, out,
                            f"\x1b[1;96m{'─── CAMERAS ':─<{preview_w}}\x1b[0m")
                 preview_row += 1
 
-                for ci, (cc, sensor) in enumerate(cam_sensors):
+                for ci, (cc, sensor, dev) in enumerate(cam_sensors):
+                    is_sel = (ci == selected_cam)
                     preview_h = cam_h_each - 2  # leave room for label
                     if sensor is not None:
                         try:
@@ -649,12 +933,14 @@ def _screen_summary(term: _Term, out,
                         _draw_text(buf, preview_row, preview_col + 1,
                                    f"\x1b[90m(no preview available)\x1b[0m")
 
-                    # Draw camera label below preview
+                    # Draw camera label below preview with selection indicator
                     label_row = preview_row + preview_h
-                    _draw_text_clear(buf, label_row, preview_col + 1,
-                                     f"\x1b[96;1m{cc.name}\x1b[0m "
-                                     f"\x1b[90m({cc.type} {cc.width}×{cc.height})\x1b[0m",
-                                     preview_w - 2)
+                    sel_ind = "\x1b[97;1m▸\x1b[0m " if is_sel else "  "
+                    fmt_info = f"{cc.pixel_format or ''} " if cc.pixel_format else ""
+                    _draw_text_clear(buf, label_row, preview_col,
+                                     f"{sel_ind}\x1b[96;1m{cc.name}\x1b[0m "
+                                     f"\x1b[90m({cc.type} {fmt_info}{cc.width}×{cc.height}@{cc.fps or '?'})\x1b[0m",
+                                     preview_w)
                     preview_row += cam_h_each
 
             # Draw robot states
@@ -701,9 +987,15 @@ def _screen_summary(term: _Term, out,
 
             # ── Footer / controls ──
             footer_row = H - 2
+            cam_controls = ""
+            if selected_cam >= 0 and cam_sensors[selected_cam][2]:
+                dev = cam_sensors[selected_cam][2]
+                if dev and dev.dtype == "v4l2" and dev.formats:
+                    cam_controls = "\x1b[33m[f]\x1b[0m format  \x1b[33m[r]\x1b[0m resolution  "
             _draw_text_clear(buf, footer_row, 2,
-                             "\x1b[33m[Enter]\x1b[0m save config  "
-                             "\x1b[33m[m]\x1b[0m preview mode  "
+                             f"\x1b[33m[Enter]\x1b[0m save  "
+                             f"{cam_controls}"
+                             "\x1b[33m[m]\x1b[0m mode  "
                              "\x1b[33m[\\]\x1b[0m debug  "
                              "\x1b[33m[q/Esc]\x1b[0m cancel", 0)
 
@@ -726,6 +1018,53 @@ def _screen_summary(term: _Term, out,
                 mode_idx = (mode_idx + 1) % len(RENDER_MODES)
             elif key == "\\":
                 show_debug = not show_debug
+            # Camera selection with number keys
+            elif key and key.isdigit():
+                idx = int(key) - 1
+                if 0 <= idx < len(cam_sensors):
+                    selected_cam = idx
+            # Format selection for selected camera
+            elif key == "f" and selected_cam >= 0:
+                cc, sensor, dev = cam_sensors[selected_cam]
+                if dev and dev.dtype == "v4l2" and dev.formats:
+                    # Find current format index
+                    cur_fmt_idx = 0
+                    for fi, fmt in enumerate(dev.formats):
+                        if fmt.fourcc == cc.pixel_format:
+                            cur_fmt_idx = fi
+                            break
+                    new_idx = _pick_format(term, out, dev.formats, cur_fmt_idx, W, H)
+                    if new_idx is not None and new_idx != cur_fmt_idx:
+                        new_fmt = dev.formats[new_idx]
+                        cc.pixel_format = new_fmt.fourcc
+                        # Pick first mode of new format
+                        if new_fmt.modes:
+                            m = new_fmt.modes[0]
+                            cc.width, cc.height, cc.fps = m.width, m.height, m.fps
+                        _needs_reopen.add(selected_cam)
+                    _needs_clear = True
+            # Resolution selection for selected camera
+            elif key == "r" and selected_cam >= 0:
+                cc, sensor, dev = cam_sensors[selected_cam]
+                if dev and dev.dtype == "v4l2" and dev.formats:
+                    # Find current format and mode index
+                    cur_fmt = None
+                    for fmt in dev.formats:
+                        if fmt.fourcc == cc.pixel_format:
+                            cur_fmt = fmt
+                            break
+                    if cur_fmt and cur_fmt.modes:
+                        cur_mode_idx = 0
+                        for mi, m in enumerate(cur_fmt.modes):
+                            if m.width == cc.width and m.height == cc.height and m.fps == cc.fps:
+                                cur_mode_idx = mi
+                                break
+                        new_idx = _pick_resolution(term, out, cur_fmt.modes, cur_mode_idx, W, H)
+                        if new_idx is not None:
+                            m = cur_fmt.modes[new_idx]
+                            cc.width, cc.height, cc.fps = m.width, m.height, m.fps
+                            _needs_reopen.add(selected_cam)
+                        _needs_clear = True
 
             # Throttle to ~30 FPS
             _el = time.monotonic() - _t_now
@@ -734,7 +1073,7 @@ def _screen_summary(term: _Term, out,
 
     finally:
         # Clean up sensors
-        for _, sensor in cam_sensors:
+        for _, sensor, _ in cam_sensors:
             if sensor is not None:
                 try:
                     sensor.close()

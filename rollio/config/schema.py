@@ -18,6 +18,7 @@ class CameraConfig(BaseModel):
     height: int = 480
     fps: int = 30
     pixel_format: str = "rgb24"    # for v4l2: "yuyv", "mjpg"
+    id_path: str = ""              # udev ID_PATH for stable device identification
 
 
 class RobotConfig(BaseModel):

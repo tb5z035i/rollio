@@ -3,20 +3,22 @@ description: ''
 fps: 30
 mode: teleop
 cameras:
-- name: cam_0
-  type: pseudo
-  device: 0
-  width: 640
-  height: 480
-  fps: 30
-  pixel_format: rgb24
 - name: cam_1
   type: v4l2
   device: 0
-  width: 640
-  height: 480
+  width: 1280
+  height: 960
   fps: 30
-  pixel_format: rgb24
+  pixel_format: MJPG
+  id_path: pci-0000:af:00.0-usb-0:4:1.0
+- name: cam_2
+  type: v4l2
+  device: 2
+  width: 1280
+  height: 720
+  fps: 30
+  pixel_format: MJPG
+  id_path: pci-0000:af:00.0-usb-0:5:1.0
 robots:
 - name: arm_0
   type: pseudo

@@ -8,6 +8,7 @@ Available modes (use the ``mode`` parameter of :func:`render_frame`):
     ===== =========== ============
     Mode  Label       Bytes / px
     ===== =========== ============
+    true  24-bit      39
     256   256-colour  23
     16    16-colour   13
     gray  grayscale   23
@@ -23,6 +24,11 @@ import numpy as np
 _D3 = np.empty((256, 3), dtype=np.uint8)
 for _i in range(256):
     _D3[_i] = list(f"{_i:03d}".encode())
+
+# 24-bit truecolour template: \x1b[38;2;RRR;GGG;BBB;48;2;RRR;GGG;BBBm▀
+_TC_TMPL = np.frombuffer(
+    b"\x1b[38;2;000;000;000;48;2;000;000;000m\xe2\x96\x80", dtype=np.uint8).copy()
+_TC_LEN = 39
 
 # 256-colour template: \x1b[38;5;NNN;48;5;NNNm▀
 _C256_TMPL = np.frombuffer(
@@ -67,13 +73,13 @@ _RST    = b"\x1b[0m"
 
 # ── Public constants ──────────────────────────────────────────────────
 
-RENDER_MODES: tuple[str, ...] = ("256", "16", "gray", "2")
+RENDER_MODES: tuple[str, ...] = ("true", "256", "16", "gray", "2")
 """Available render mode identifiers, ordered by decreasing quality."""
 
 MODE_LABELS: dict[str, str] = {
-    "256": "256-clr", "16": "16-clr", "gray": "gray", "2": "2-clr",
+    "true": "24-bit", "256": "256-clr", "16": "16-clr", "gray": "gray", "2": "2-clr",
 }
-MODE_BPP: dict[str, int] = {"256": 23, "16": 13, "gray": 23, "2": 3}
+MODE_BPP: dict[str, int] = {"true": 39, "256": 23, "16": 13, "gray": 23, "2": 3}
 
 
 # ── Colour quantisation helpers ───────────────────────────────────────
@@ -104,6 +110,26 @@ def _nearest_16(rgb: np.ndarray) -> np.ndarray:
 
 
 # ── Per-mode pixel-buffer builders ────────────────────────────────────
+
+def _build_true(rgb: np.ndarray, w: int, h: int) -> bytes:
+    """24-bit truecolour: highest quality, highest bandwidth."""
+    top = rgb[0::2]
+    bot = rgb[1::2]
+    n = w * h
+    buf = np.tile(_TC_TMPL, n).reshape(n, _TC_LEN)
+    tf = top.reshape(n, 3)
+    bf = bot.reshape(n, 3)
+    # Foreground RGB (top row): positions 7,11,15
+    buf[:,  7:10] = _D3[tf[:, 0]]
+    buf[:, 11:14] = _D3[tf[:, 1]]
+    buf[:, 15:18] = _D3[tf[:, 2]]
+    # Background RGB (bottom row): positions 24,28,32
+    buf[:, 24:27] = _D3[bf[:, 0]]
+    buf[:, 28:31] = _D3[bf[:, 1]]
+    buf[:, 32:35] = _D3[bf[:, 2]]
+    rows = buf.reshape(h, w * _TC_LEN)
+    return _RST_NL.join(rows[y].tobytes() for y in range(h)) + _RST
+
 
 def _build_256(rgb: np.ndarray, w: int, h: int) -> bytes:
     idx = _rgb_to_256(rgb)
@@ -152,6 +178,7 @@ def _build_2(rgb: np.ndarray, w: int, h: int) -> bytes:
 
 
 _BUILDERS: dict[str, object] = {
+    "true": _build_true,
     "256":  _build_256,
     "16":   _build_16,
     "gray": _build_gray,

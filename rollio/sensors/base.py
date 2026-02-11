@@ -16,6 +16,37 @@ class SensorInfo:
     properties: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class CameraMode:
+    """A supported camera resolution/framerate combination."""
+    width: int
+    height: int
+    fps: int
+
+    def __str__(self) -> str:
+        return f"{self.width}×{self.height}@{self.fps}fps"
+
+
+@dataclass
+class CameraFormat:
+    """A supported pixel format with its available modes."""
+    fourcc: str                               # "YUYV", "MJPG", etc.
+    description: str                          # Human-readable name
+    modes: list[CameraMode] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        return f"{self.fourcc} ({self.description})"
+
+
+@dataclass
+class CameraSettings:
+    """Current camera configuration/settings."""
+    width: int
+    height: int
+    fps: int
+    pixel_format: str
+
+
 class ImageSensor(ABC):
     """Abstract interface for cameras."""
 
@@ -44,6 +75,42 @@ class ImageSensor(ABC):
     @property
     @abstractmethod
     def fps(self) -> int: ...
+
+    # ── Parameter probing interface (optional, with defaults) ─────────
+
+    def list_formats(self) -> list[CameraFormat]:
+        """Return available pixel formats and their modes.
+
+        Default implementation returns a single pseudo format.
+        Subclasses should override for real hardware enumeration.
+        """
+        return [CameraFormat(
+            fourcc="RGB",
+            description="RGB24",
+            modes=[CameraMode(self.width, self.height, self.fps)]
+        )]
+
+    def get_config(self) -> CameraSettings:
+        """Return current camera configuration."""
+        return CameraSettings(
+            width=self.width,
+            height=self.height,
+            fps=self.fps,
+            pixel_format="RGB"
+        )
+
+    def apply_config(self, width: int, height: int, fps: int,
+                     pixel_format: str) -> bool:
+        """Apply new camera configuration.
+
+        Returns True if successful, False otherwise.
+        Default implementation does nothing (config is fixed).
+        """
+        return False
+
+    def supports_config_change(self) -> bool:
+        """Return True if this camera supports runtime config changes."""
+        return False
 
 
 class RobotSensor(ABC):
