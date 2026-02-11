@@ -1,10 +1,18 @@
 from rollio.sensors.base import (
-    CameraFormat, CameraMode, CameraSettings, ImageSensor, RobotSensor, SensorInfo,
+    CameraChannel, CameraFormat, CameraMode, CameraSettings,
+    ImageSensor, RobotSensor, SensorInfo,
 )
+from rollio.sensors.pseudo_camera import PseudoCamera
+from rollio.sensors.realsense_camera import RealSenseCamera
+from rollio.sensors.scanner import DetectedDevice, scan_cameras, scan_robots
 from rollio.sensors.v4l2_camera import V4L2Camera
 
 __all__ = [
-    "CameraFormat", "CameraMode", "CameraSettings",
+    # Base classes and data types
+    "CameraChannel", "CameraFormat", "CameraMode", "CameraSettings",
     "ImageSensor", "RobotSensor", "SensorInfo",
-    "V4L2Camera",
+    # Concrete implementations
+    "PseudoCamera", "RealSenseCamera", "V4L2Camera",
+    # Scanner
+    "DetectedDevice", "scan_cameras", "scan_robots",
 ]

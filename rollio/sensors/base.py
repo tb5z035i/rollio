@@ -3,9 +3,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from rollio.sensors.scanner import DetectedDevice
 
 
 @dataclass
@@ -47,8 +50,58 @@ class CameraSettings:
     pixel_format: str
 
 
+@dataclass
+class CameraChannel:
+    """Description of a camera channel/stream."""
+    name: str                                 # "color", "depth", "infrared", etc.
+    default_width: int = 640
+    default_height: int = 480
+    default_fps: int = 30
+    pixel_format: str = "rgb24"               # native format
+    description: str = ""                     # human-readable description
+
+
 class ImageSensor(ABC):
-    """Abstract interface for cameras."""
+    """Abstract interface for cameras.
+
+    Subclasses should implement class methods for device scanning:
+    - scan(): Detect available devices of this type
+    - probe_formats(): Probe formats without instantiating
+    """
+
+    # ── Class-level type identifier ───────────────────────────────────
+
+    SENSOR_TYPE: str = "unknown"  # Override in subclasses: "pseudo", "v4l2", etc.
+
+    # ── Factory / scanning class methods ──────────────────────────────
+
+    @classmethod
+    def scan(cls) -> list["DetectedDevice"]:
+        """Scan for available devices of this sensor type.
+
+        Returns a list of DetectedDevice objects.
+        Subclasses should override this method.
+        """
+        return []
+
+    @classmethod
+    def probe_formats(cls, device_id: int | str) -> list[CameraFormat]:
+        """Probe available formats for a device without instantiating.
+
+        Subclasses should override for hardware enumeration.
+        """
+        return []
+
+    @classmethod
+    def get_channels(cls) -> list[CameraChannel]:
+        """Return available channels for this camera type.
+
+        Most cameras have a single 'color' channel.
+        RealSense-type cameras may have 'color', 'depth', 'infrared', etc.
+        """
+        return [CameraChannel(name="color", description="RGB Color")]
+
+    # ── Instance methods ──────────────────────────────────────────────
 
     @abstractmethod
     def open(self) -> None: ...

@@ -21,9 +21,10 @@ import numpy as np
 from rollio.config.schema import (
     CameraConfig, ControlConfig, RobotConfig, RollioConfig, StorageConfig,
 )
-from rollio.sensors.base import CameraFormat, CameraMode
+from rollio.sensors.base import CameraFormat, CameraMode, ImageSensor
 from rollio.sensors.pseudo_camera import PseudoCamera
 from rollio.sensors.pseudo_robot import PseudoRobot
+from rollio.sensors.realsense_camera import RealSenseCamera
 from rollio.sensors.scanner import DetectedDevice, scan_cameras, scan_robots
 from rollio.sensors.v4l2_camera import V4L2Camera
 from rollio.tui.renderer import (
@@ -86,7 +87,7 @@ def _make_camera(dev: DetectedDevice,
                  width: int | None = None,
                  height: int | None = None,
                  fps: int | None = None,
-                 pixel_format: str | None = None) -> PseudoCamera | V4L2Camera | None:
+                 pixel_format: str | None = None) -> ImageSensor | None:
     """Instantiate a camera sensor from a DetectedDevice for preview.
 
     If width/height/fps/pixel_format are provided, use them; otherwise
@@ -108,6 +109,19 @@ def _make_camera(dev: DetectedDevice,
                 device=dev.device_id,
                 width=w, height=h, fps=f,
                 pixel_format=pf)
+            cam.open()
+            return cam
+        except Exception:
+            pass
+    elif dev.dtype == "realsense":
+        try:
+            cam = RealSenseCamera(
+                name="preview",
+                device=str(dev.device_id),
+                width=w, height=h, fps=f,
+                enable_color=True,
+                enable_depth=False,  # Disable depth for preview
+                enable_infrared=False)
             cam.open()
             return cam
         except Exception:

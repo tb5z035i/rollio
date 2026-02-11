@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 
-from rollio.sensors.base import ImageSensor, SensorInfo
+from rollio.sensors.base import (
+    CameraChannel, CameraFormat, CameraMode, ImageSensor, SensorInfo,
+)
 from rollio.utils.time import monotonic_sec
+
+if TYPE_CHECKING:
+    from rollio.sensors.scanner import DetectedDevice
 
 
 class PseudoCamera(ImageSensor):
@@ -15,6 +21,56 @@ class PseudoCamera(ImageSensor):
     frame number overlay.  Useful for end-to-end pipeline testing without
     real hardware.
     """
+
+    SENSOR_TYPE = "pseudo"
+
+    # ── Factory / scanning class methods ──────────────────────────────
+
+    @classmethod
+    def scan(cls) -> list["DetectedDevice"]:
+        """Return a single pseudo camera device."""
+        from rollio.sensors.scanner import DetectedDevice
+
+        return [DetectedDevice(
+            kind="camera",
+            dtype=cls.SENSOR_TYPE,
+            device_id=0,
+            label="Pseudo Camera (test pattern)",
+            properties={"width": 640, "height": 480, "fps": 30},
+            formats=[CameraFormat(
+                fourcc="RGB",
+                description="RGB24",
+                modes=[
+                    CameraMode(640, 480, 30),
+                    CameraMode(320, 240, 30),
+                    CameraMode(1280, 720, 30),
+                ])],
+            id_path="",
+            channels=[CameraChannel(
+                name="color",
+                default_width=640,
+                default_height=480,
+                default_fps=30,
+                description="Synthetic RGB pattern")])]
+
+    @classmethod
+    def probe_formats(cls, device_id: int | str) -> list[CameraFormat]:
+        """Return pseudo formats (any resolution is supported)."""
+        return [CameraFormat(
+            fourcc="RGB",
+            description="RGB24",
+            modes=[
+                CameraMode(640, 480, 30),
+                CameraMode(320, 240, 30),
+                CameraMode(1280, 720, 30),
+            ])]
+
+    @classmethod
+    def get_channels(cls) -> list[CameraChannel]:
+        """Pseudo cameras have a single color channel."""
+        return [CameraChannel(name="color", description="Synthetic RGB pattern")]
+
+    # ── Instance methods ──────────────────────────────────────────────
 
     def __init__(self, name: str = "pseudo_cam",
                  width: int = 640, height: int = 480,

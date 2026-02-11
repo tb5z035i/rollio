@@ -10,15 +10,27 @@ from pydantic import BaseModel, Field
 
 # ─── Sub-models ────────────────────────────────────────────────────────
 
+class CameraChannelConfig(BaseModel):
+    """Configuration for a single camera channel/stream."""
+    name: str = "color"            # "color", "depth", "infrared", etc.
+    width: int = 640
+    height: int = 480
+    fps: int = 30
+    pixel_format: str = "rgb24"    # "rgb24", "MJPG", "YUYV", "z16" (depth), etc.
+    enabled: bool = True
+
+
 class CameraConfig(BaseModel):
     name: str = "cam0"
     type: Literal["pseudo", "v4l2", "realsense"] = "pseudo"
     device: int | str = 0          # device index or path
-    width: int = 640
-    height: int = 480
-    fps: int = 30
-    pixel_format: str = "rgb24"    # for v4l2: "yuyv", "mjpg"
+    width: int = 640               # primary channel width (for single-channel compat)
+    height: int = 480              # primary channel height
+    fps: int = 30                  # primary channel fps
+    pixel_format: str = "rgb24"    # primary channel format
     id_path: str = ""              # udev ID_PATH for stable device identification
+    channels: list[CameraChannelConfig] = Field(
+        default_factory=list)      # multi-channel config (empty = single channel mode)
 
 
 class RobotConfig(BaseModel):

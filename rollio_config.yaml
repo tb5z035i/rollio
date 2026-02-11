@@ -11,6 +11,7 @@ cameras:
   fps: 30
   pixel_format: MJPG
   id_path: pci-0000:af:00.0-usb-0:4:1.0
+  channels: []
 - name: cam_2
   type: v4l2
   device: 2
@@ -19,6 +20,16 @@ cameras:
   fps: 30
   pixel_format: MJPG
   id_path: pci-0000:af:00.0-usb-0:5:1.0
+  channels: []
+- name: cam_3
+  type: realsense
+  device: '335522070371'
+  width: 1920
+  height: 1080
+  fps: 30
+  pixel_format: RGB
+  id_path: ''
+  channels: []
 robots:
 - name: arm_0
   type: pseudo
