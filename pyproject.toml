@@ -9,6 +9,7 @@ description = "Timestamp-aligned robot episode collection for VLA/RL training"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24",
+    "scipy>=1.11",
     "opencv-python-headless>=4.8",
     "pydantic>=2.0",
     "pyarrow>=14.0",
@@ -18,9 +19,21 @@ dependencies = [
 [project.optional-dependencies]
 gpu = ["cupy-cuda13x>=13.0"]
 realsense = ["pyrealsense2"]
+airbot = ["pin", "airbot_hardware_py", "python-can>=4.0"]
+completion = ["argcomplete>=3.0"]
+test = ["pytest>=7.0", "pytest-cov>=4.0"]
+all = ["argcomplete>=3.0"]
 
 [project.scripts]
 rollio = "rollio.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rollio*"]
+
+[tool.setuptools.package-data]
+"rollio.robot" = ["urdf/*.urdf"]
+
+[tool.pytest.ini_options]
+markers = [
+    "hardware: marks tests that require actual hardware (deselect with '-m \"not hardware\"')",
+]

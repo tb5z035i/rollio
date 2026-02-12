@@ -59,15 +59,38 @@ def scan_cameras() -> list[DetectedDevice]:
 
 
 def scan_robots() -> list[DetectedDevice]:
-    """Scan for available robots."""
+    """Scan for available robots.
+    
+    Scans for AIRBOT Play robots via CAN bus and includes a pseudo robot
+    as fallback.
+    
+    Note: For full robot control capabilities, use rollio.robot module directly.
+    """
     found: list[DetectedDevice] = []
 
-    # Always offer a pseudo robot
+    # Scan for AIRBOT Play robots
+    try:
+        from rollio.robot import scan_robots as robot_scan_robots
+        for robot in robot_scan_robots():
+            if robot.robot_type == "airbot_play":
+                found.append(DetectedDevice(
+                    kind="robot",
+                    dtype="airbot_play",
+                    device_id=robot.device_id,
+                    label=robot.label,
+                    properties={
+                        "num_joints": robot.n_dof,
+                        "can_interface": robot.properties.get("can_interface"),
+                        **robot.properties,
+                    }
+                ))
+    except ImportError:
+        pass
+
+    # Always offer a pseudo robot as fallback
     found.append(DetectedDevice(
         kind="robot", dtype="pseudo", device_id=0,
         label="Pseudo Robot (6-DOF sine wave)",
         properties={"num_joints": 6}))
-
-    # Future: scan CAN bus for AIRBOT, USB serial for NERO, etc.
 
     return found

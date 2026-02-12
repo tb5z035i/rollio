@@ -652,6 +652,20 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
     return configs
 
 
+def _get_airbot_robot(dev: DetectedDevice):
+    """Get an AIRBOTPlay instance for device identification."""
+    if dev.dtype != "airbot_play":
+        return None
+    try:
+        from rollio.robot import AIRBOTPlay, is_airbot_available
+        if not is_airbot_available():
+            return None
+        can_interface = dev.properties.get("can_interface", str(dev.device_id))
+        return AIRBOTPlay(can_interface=can_interface)
+    except Exception:
+        return None
+
+
 def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                    ) -> list[RobotConfig]:
     """Robot identification screen — oscillation + name prompt."""
@@ -667,6 +681,14 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
         default_name = f"arm_{i}"
         phase = "preview"    # "preview" → "name" → "role" → done
         _needs_clear = True
+        
+        # Start identification for AIRBOT devices
+        airbot_robot = _get_airbot_robot(dev)
+        if airbot_robot is not None:
+            try:
+                airbot_robot.identify_start()
+            except Exception:
+                pass
 
         while chosen_name is None or phase != "done":
             W, H = term.cols, term.rows
@@ -686,20 +708,47 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                 _draw_text(buf, 5, 2,
                            "\x1b[93m⟳ Last joint oscillating "
                            "(simulated identification)\x1b[0m")
+            elif dev.dtype == "airbot_play" and airbot_robot is not None:
+                _draw_text(buf, 5, 2,
+                           "\x1b[93m⟳ LED blinking orange + gravity compensation "
+                           "(move arm to identify)\x1b[0m")
 
             # Robot state display (re-read every iteration)
-            if rob is not None:
+            pos = None
+            n_joints = dev.properties.get("num_joints", 6)
+            
+            # Try AIRBOT robot first (for real hardware)
+            if airbot_robot is not None and airbot_robot._is_open:
+                try:
+                    # Step gravity compensation to keep robot in free drive
+                    airbot_robot.step_free_drive()
+                    
+                    joint_state = airbot_robot.read_joint_state()
+                    if joint_state.is_valid and joint_state.position is not None:
+                        pos = joint_state.position
+                        n_joints = len(pos)
+                except Exception:
+                    pass
+            
+            # Fall back to legacy sensor interface (for pseudo robot)
+            if pos is None and rob is not None:
                 _, state = rob.read()
                 pos = state.get("position", np.zeros(0))
+                n_joints = len(pos) if len(pos) > 0 else n_joints
+            
+            # Display joint positions
+            if pos is not None and len(pos) > 0:
                 start_row = 7
-                n_joints = len(pos)
                 bar_w = min(40, W - 25)
                 for j in range(n_joints):
-                    p = pos[j]
+                    p = pos[j] if j < len(pos) else 0.0
                     frac = float(np.clip((p + 2) / 4, 0, 1))
                     bar_len = int(frac * bar_w)
                     bar = "█" * bar_len + "░" * (bar_w - bar_len)
-                    marker = " \x1b[91m← moving\x1b[0m" if j == n_joints - 1 else ""
+                    # For pseudo robot, mark last joint as moving
+                    marker = ""
+                    if dev.dtype == "pseudo" and j == n_joints - 1:
+                        marker = " \x1b[91m← moving\x1b[0m"
                     _draw_text(buf, start_row + j, 4,
                                f"j{j} \x1b[36m{p:+6.2f}\x1b[0m "
                                f"\x1b[33m{bar}\x1b[0m{marker}")
@@ -740,10 +789,16 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                     phase = "name"
                     _needs_clear = True
                 elif key == "s":
-                    break               # skip this robot
+                    break               # skip this robot (identify_stop called below)
                 elif key == "\\":
                     show_debug = not show_debug
                 elif key == "q" or key == "\x1b":
+                    # Stop identification before quitting
+                    if airbot_robot is not None:
+                        try:
+                            airbot_robot.identify_stop()
+                        except Exception:
+                            pass
                     if rob:
                         rob.close()
                     return configs
@@ -791,6 +846,13 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                     continue
                 chosen_role = "leader" if result.lower().startswith("l") else "follower"
                 phase = "done"
+
+        # Stop identification for AIRBOT devices
+        if airbot_robot is not None:
+            try:
+                airbot_robot.identify_stop()
+            except Exception:
+                pass
 
         if rob:
             rob.close()
@@ -881,12 +943,14 @@ def _screen_summary(term: _Term, out,
     used_rob_devs: set[int] = set()
     for rc in rob_configs:
         sensor = None
+        matched_dev = None
         for di, d in enumerate(rob_devs):
             if di not in used_rob_devs and d.dtype == rc.type:
                 sensor = _make_robot(d)
+                matched_dev = d
                 used_rob_devs.add(di)
                 break
-        rob_sensors.append((rc, sensor))
+        rob_sensors.append((rc, sensor, matched_dev))
 
     mode_idx = 0  # "true" (24-bit truecolor) for best preview quality
     show_debug = False
@@ -990,7 +1054,7 @@ def _screen_summary(term: _Term, out,
                              f"│ \x1b[1;93mRobots ({len(rob_configs)})\x1b[0m",
                              info_w)
             row += 1
-            for ri, (rc, _) in enumerate(rob_sensors):
+            for ri, (rc, _, matched_rob_dev) in enumerate(rob_sensors):
                 role_clr = "92" if rc.role == "leader" else "33"
                 _draw_text_clear(buf, row, 2,
                                  f"│  \x1b[93m{rc.name[:12]:<12}\x1b[0m "
@@ -998,6 +1062,22 @@ def _screen_summary(term: _Term, out,
                                  f"\x1b[90m{rc.num_joints}-DOF\x1b[0m",
                                  info_w)
                 row += 1
+                # Show SN for AIRBOT devices
+                if rc.type == "airbot_play" and matched_rob_dev is not None:
+                    sn = matched_rob_dev.properties.get("serial_number", "")
+                    eef = matched_rob_dev.properties.get("end_effector_type", "")
+                    info_line = ""
+                    if sn:
+                        info_line += f"SN:{sn}"
+                    if eef:
+                        if info_line:
+                            info_line += " "
+                        info_line += f"EEF:{eef}"
+                    if info_line:
+                        _draw_text_clear(buf, row, 2,
+                                         f"│     \x1b[90m{info_line}\x1b[0m",
+                                         info_w)
+                        row += 1
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
             row += 1
             _draw_text_clear(buf, row, 2,
@@ -1094,7 +1174,7 @@ def _screen_summary(term: _Term, out,
                 preview_row += 1
                 bar_w = min(30, preview_w - 20)
 
-                for ri, (rc, sensor) in enumerate(rob_sensors):
+                for ri, (rc, sensor, _) in enumerate(rob_sensors):
                     role_clr = "92" if rc.role == "leader" else "33"
                     _draw_text(buf, preview_row, preview_col,
                                f"\x1b[{role_clr};1m{rc.name}\x1b[0m "
@@ -1223,7 +1303,7 @@ def _screen_summary(term: _Term, out,
                     sensor.close()
                 except Exception:
                     pass
-        for _, sensor in rob_sensors:
+        for _, sensor, _ in rob_sensors:
             if sensor is not None:
                 try:
                     sensor.close()

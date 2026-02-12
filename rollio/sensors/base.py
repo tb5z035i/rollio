@@ -167,7 +167,12 @@ class ImageSensor(ABC):
 
 
 class RobotSensor(ABC):
-    """Abstract interface for robot proprioception."""
+    """Abstract interface for robot proprioception (legacy).
+    
+    Note: For full robot control with kinematics, control modes, etc.,
+    use the rollio.robot module instead. This class remains for backward
+    compatibility with simple proprioception-only use cases.
+    """
 
     @abstractmethod
     def open(self) -> None: ...

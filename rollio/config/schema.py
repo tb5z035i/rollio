@@ -36,7 +36,7 @@ class CameraConfig(BaseModel):
 
 class RobotConfig(BaseModel):
     name: str = "arm0"
-    type: Literal["pseudo", "airbot", "nero"] = "pseudo"
+    type: Literal["pseudo", "airbot_play", "nero"] = "pseudo"
     role: Literal["leader", "follower"] = "follower"
     num_joints: int = 6
     device: str = ""               # CAN bus, serial port, etc.
