@@ -24,6 +24,8 @@ Also, the storage backend should support:
 
 When implementing, also provide with a python-based simple web server to save the file uploaded.
 
+The post-processing stage for one episode, especially video encoding and other data encoding/export, should also be designed to run asynchronously in the background as much as possible. Finishing one episode should not force the operator to wait for the full encoding/export of that episode before starting the next one, except for short bounded delays that are necessary to safely rotate buffers, flush handles, or guarantee correctness.
+
 ## Visual Data 
 
 The image sensors and the corresponding channels that should support:
@@ -93,6 +95,8 @@ During the formal data collection, the TUI should contain these elements:
 The live preview of cameras are also broadcasted via rtsp.
 
 The beginning and finishing of one episodes should be signaled by external control input. After finishing each episodes, one should be able to keep or discard the episodes that are just collected. The binding of "start", "stop", "keep", "discard" to the detailed action on external control input devices should be configurable in setup wizards with default values. 
+
+The collection pipeline should therefore support asynchronous background workers for online video encoding, tabular data writing, and final dataset export/packaging. The foreground data collection loop should only do the minimum work needed to safely end the current episode and start the next one quickly.
 
 ### Tele-Operation Mode:
 
