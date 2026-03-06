@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from rollio.episode.codecs import (
+    get_depth_codec_option,
+    get_rgb_codec_option,
+)
 
 
 # ─── Sub-models ────────────────────────────────────────────────────────
@@ -48,9 +53,21 @@ class StorageConfig(BaseModel):
 
 
 class EncoderConfig(BaseModel):
-    video_codec: str = "mp4v"
-    depth_codec: Literal["raw", "ffv1"] = "raw"
+    video_codec: str = "libx264"
+    depth_codec: str = "ffv1"
     background_workers: int = 1
+
+    @field_validator("video_codec", mode="before")
+    @classmethod
+    def _validate_video_codec(cls, value: str) -> str:
+        option = get_rgb_codec_option(str(value))
+        return option.name
+
+    @field_validator("depth_codec", mode="before")
+    @classmethod
+    def _validate_depth_codec(cls, value: str) -> str:
+        option = get_depth_codec_option(str(value))
+        return option.name
 
 
 class UploadConfig(BaseModel):
@@ -98,6 +115,13 @@ class RollioConfig(BaseModel):
     upload: UploadConfig = Field(default_factory=UploadConfig)
     async_pipeline: AsyncPipelineConfig = Field(default_factory=AsyncPipelineConfig)
     controls: ControlConfig = Field(default_factory=ControlConfig)
+
+    @model_validator(mode="after")
+    def _validate_explicit_pairs(self) -> "RollioConfig":
+        if self.teleop_pairs:
+            from rollio.config.pairing import validate_teleop_pairs
+            validate_teleop_pairs(self.robots, self.teleop_pairs)
+        return self
 
     # ── I/O helpers ────────────────────────────────────────────────
 
