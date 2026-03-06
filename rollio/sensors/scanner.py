@@ -1,6 +1,7 @@
 """Hardware scanner — detect cameras and robots."""
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -40,7 +41,42 @@ def _get_camera_classes() -> list[type["ImageSensor"]]:
     return [PseudoCamera, V4L2Camera, RealSenseCamera]
 
 
-def scan_cameras() -> list[DetectedDevice]:
+def _build_pseudo_camera_devices(count: int) -> list[DetectedDevice]:
+    """Create one DetectedDevice entry per requested pseudo camera."""
+    from rollio.sensors.pseudo_camera import PseudoCamera
+
+    if count <= 0:
+        return []
+
+    base_devices = PseudoCamera.scan()
+    if not base_devices:
+        return []
+
+    base = base_devices[0]
+    devices: list[DetectedDevice] = []
+    for idx in range(count):
+        devices.append(DetectedDevice(
+            kind=base.kind,
+            dtype=base.dtype,
+            device_id=idx,
+            label=f"Pseudo Camera {idx + 1} (test pattern)",
+            properties=deepcopy(base.properties),
+            formats=deepcopy(base.formats),
+            id_path=base.id_path,
+            channels=deepcopy(base.channels),
+            width=base.width,
+            height=base.height,
+            fps=base.fps,
+            pixel_format=base.pixel_format,
+        ))
+    return devices
+
+
+def scan_cameras(
+    *,
+    include_simulated: bool = False,
+    simulated_count: int = 0,
+) -> list[DetectedDevice]:
     """Scan for available cameras using registered sensor classes.
 
     Each camera sensor class implements its own scan() method.
@@ -49,20 +85,46 @@ def scan_cameras() -> list[DetectedDevice]:
     found: list[DetectedDevice] = []
 
     for camera_cls in _get_camera_classes():
+        if camera_cls.SENSOR_TYPE == "pseudo":
+            continue
         try:
             devices = camera_cls.scan()
             found.extend(devices)
         except Exception:
             pass
 
+    if include_simulated:
+        found.extend(_build_pseudo_camera_devices(simulated_count))
+
     return found
 
 
-def scan_robots() -> list[DetectedDevice]:
+def _build_pseudo_robot_devices(count: int) -> list[DetectedDevice]:
+    """Create one DetectedDevice entry per requested pseudo robot."""
+    if count <= 0:
+        return []
+
+    devices: list[DetectedDevice] = []
+    for idx in range(count):
+        devices.append(DetectedDevice(
+            kind="robot",
+            dtype="pseudo",
+            device_id=idx,
+            label=f"Pseudo Robot {idx + 1} (6-DOF simulation)",
+            properties={"num_joints": 6, "simulated": True},
+        ))
+    return devices
+
+
+def scan_robots(
+    *,
+    include_simulated: bool = False,
+    simulated_count: int = 0,
+) -> list[DetectedDevice]:
     """Scan for available robots.
     
-    Scans for AIRBOT Play robots via CAN bus and includes a pseudo robot
-    as fallback.
+    Scans for AIRBOT Play robots via CAN bus. Simulated pseudo robots are
+    only included when explicitly requested.
     
     Note: For full robot control capabilities, use rollio.robot module directly.
     """
@@ -72,6 +134,8 @@ def scan_robots() -> list[DetectedDevice]:
     try:
         from rollio.robot import scan_robots as robot_scan_robots
         for robot in robot_scan_robots():
+            if robot.robot_type == "pseudo":
+                continue
             if robot.robot_type == "airbot_play":
                 found.append(DetectedDevice(
                     kind="robot",
@@ -87,10 +151,7 @@ def scan_robots() -> list[DetectedDevice]:
     except ImportError:
         pass
 
-    # Always offer a pseudo robot as fallback
-    found.append(DetectedDevice(
-        kind="robot", dtype="pseudo", device_id=0,
-        label="Pseudo Robot (6-DOF sine wave)",
-        properties={"num_joints": 6}))
+    if include_simulated:
+        found.extend(_build_pseudo_robot_devices(simulated_count))
 
     return found

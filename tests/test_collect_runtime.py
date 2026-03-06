@@ -82,7 +82,7 @@ def _build_runtime(root: Path, export_delay_sec: float = 1.0) -> AsyncCollection
             ),
         ],
         storage=StorageConfig(root=str(root), lerobot_version="v2.1"),
-        encoder=EncoderConfig(video_codec="mp4v"),
+        encoder=EncoderConfig(video_codec="mp4v", depth_codec="raw"),
         upload=UploadConfig(enabled=False),
         async_pipeline=AsyncPipelineConfig(
             export_queue_size=4,
@@ -147,6 +147,7 @@ def test_async_runtime_exports_in_background(tmp_path: Path) -> None:
 
         info = (dataset_root / "meta" / "info.json").read_text()
         assert '"fps": 10' in info
+        assert '"codec": "mpeg4"' in info
 
         assert episode_0.mapper_modes["direct_pair"] == "joint_direct"
         assert episode_0.mapper_modes["pose_pair"] == "pose_fk_ik"

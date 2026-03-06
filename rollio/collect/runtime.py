@@ -10,7 +10,8 @@ from typing import Any
 
 import numpy as np
 
-from rollio.config.schema import RollioConfig, TeleopPairConfig
+from rollio.config import suggest_teleop_pairs
+from rollio.config.schema import CameraConfig, RollioConfig, TeleopPairConfig
 from rollio.episode.recorder import EpisodeData
 from rollio.episode.writer import LeRobotV21Writer
 from rollio.robot import AIRBOTPlay, RobotArm
@@ -145,13 +146,23 @@ class AsyncEpisodeExporter:
         root: str | Path,
         project_name: str,
         fps: int,
+        camera_configs: dict[str, CameraConfig],
+        video_codec: str,
+        depth_codec: str,
         queue_size: int = 4,
         export_delay_sec: float = 0.0,
         lerobot_version: str = "v2.1",
     ) -> None:
         if lerobot_version != "v2.1":
             raise NotImplementedError("Only LeRobot v2.1 export is implemented")
-        self._writer = LeRobotV21Writer(root=root, project_name=project_name, fps=fps)
+        self._writer = LeRobotV21Writer(
+            root=root,
+            project_name=project_name,
+            fps=fps,
+            camera_configs=camera_configs,
+            video_codec=video_codec,
+            depth_codec=depth_codec,
+        )
         self._queue: queue.Queue[
             tuple[RecordedEpisode | None, ExportRecord | None]
         ] = queue.Queue(maxsize=max(1, queue_size))
@@ -346,11 +357,14 @@ class AsyncCollectionRuntime:
     def __init__(
         self,
         cameras: dict[str, ImageSensor],
+        camera_configs: dict[str, CameraConfig],
         robots: dict[str, RobotArm],
         teleop_pairs: list[TeleopPairBinding],
         fps: int,
         export_root: str | Path,
         project_name: str,
+        video_codec: str,
+        depth_codec: str,
         lerobot_version: str = "v2.1",
         export_queue_size: int = 4,
         telemetry_hz: int = 50,
@@ -358,9 +372,12 @@ class AsyncCollectionRuntime:
         export_delay_sec: float = 0.0,
     ) -> None:
         self._cameras = cameras
+        self._camera_configs = camera_configs
         self._robots = robots
         self._teleop_pairs = teleop_pairs
         self._fps = fps
+        self._video_codec = video_codec
+        self._depth_codec = depth_codec
         self._telemetry_hz = telemetry_hz
         self._control_hz = control_hz
         self._state_lock = threading.Lock()
@@ -381,6 +398,9 @@ class AsyncCollectionRuntime:
             root=export_root,
             project_name=project_name,
             fps=fps,
+            camera_configs=camera_configs,
+            video_codec=video_codec,
+            depth_codec=depth_codec,
             queue_size=export_queue_size,
             export_delay_sec=export_delay_sec,
             lerobot_version=lerobot_version,
@@ -397,11 +417,14 @@ class AsyncCollectionRuntime:
         teleop_pairs = build_teleop_pairs_from_config(cfg, robots)
         return cls(
             cameras=cameras,
+            camera_configs={camera_cfg.name: camera_cfg for camera_cfg in cfg.cameras},
             robots=robots,
             teleop_pairs=teleop_pairs,
             fps=cfg.fps,
             export_root=cfg.storage.root,
             project_name=cfg.project_name,
+            video_codec=cfg.encoder.video_codec,
+            depth_codec=cfg.encoder.depth_codec,
             lerobot_version=cfg.storage.lerobot_version,
             export_queue_size=cfg.async_pipeline.export_queue_size,
             telemetry_hz=cfg.async_pipeline.telemetry_hz,
@@ -422,6 +445,14 @@ class AsyncCollectionRuntime:
                 return 0.0
             started_at = episode._started_at  # noqa: SLF001
         return max(0.0, time.monotonic() - started_at)
+
+    @property
+    def video_codec(self) -> str:
+        return self._video_codec
+
+    @property
+    def depth_codec(self) -> str:
+        return self._depth_codec
 
     def open(self) -> None:
         if self._opened:
@@ -677,17 +708,7 @@ def build_teleop_pairs_from_config(
     if cfg.teleop_pairs:
         pair_cfgs = cfg.teleop_pairs
     else:
-        leaders = [robot.name for robot in cfg.robots if robot.role == "leader"]
-        followers = [robot.name for robot in cfg.robots if robot.role == "follower"]
-        pair_cfgs = [
-            TeleopPairConfig(
-                name=f"pair_{idx}",
-                leader=leader_name,
-                follower=follower_name,
-                mapper="auto",
-            )
-            for idx, (leader_name, follower_name) in enumerate(zip(leaders, followers))
-        ]
+        pair_cfgs = suggest_teleop_pairs(cfg.robots)
 
     pairs: list[TeleopPairBinding] = []
     for pair_cfg in pair_cfgs:

@@ -6,7 +6,6 @@ prompts the user for channel names.  Works without a desktop environment.
 from __future__ import annotations
 
 import io
-import math
 import os
 import select
 import signal
@@ -18,8 +17,18 @@ import tty
 import cv2
 import numpy as np
 
+from rollio.config.pairing import (
+    default_mapper_for_pair,
+    suggest_teleop_pairs,
+    validate_teleop_pairs,
+)
 from rollio.config.schema import (
     CameraConfig, ControlConfig, RobotConfig, RollioConfig, StorageConfig,
+    TeleopPairConfig, EncoderConfig,
+)
+from rollio.episode.codecs import (
+    available_depth_codec_options,
+    available_rgb_codec_options,
 )
 from rollio.sensors.base import CameraFormat, CameraMode, ImageSensor
 from rollio.sensors.pseudo_camera import PseudoCamera
@@ -30,6 +39,16 @@ from rollio.sensors.v4l2_camera import V4L2Camera
 from rollio.tui.renderer import (
     RENDER_MODES, DEPTH_MODES, MODE_LABELS,
     blit_frame, calc_render_size, render_frame, render_depth,
+)
+
+MODE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("teleop", "Tele-operation"),
+    ("intervention", "Intervention"),
+)
+
+MAPPER_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("joint_direct", "Direct joint mapping"),
+    ("pose_fk_ik", "FK-IK pose mapping"),
 )
 
 # ── Sync output ────────────────────────────────────────────────────────
@@ -363,11 +382,72 @@ def _pick_resolution(term: _Term, out, modes: list[CameraMode],
             scroll_offset = min(rows - visible_rows, scroll_offset + 1)
 
 
+def _pick_option(
+    term: _Term,
+    out,
+    *,
+    title: str,
+    options: list[str],
+    current_idx: int = 0,
+    subtitle: str = "",
+) -> int | None:
+    """Display a simple numbered option picker."""
+    if not options:
+        return None
+
+    input_buf = ""
+    while True:
+        W, H = term.cols, term.rows
+        buf = io.BytesIO()
+        buf.write(b"\x1b[2J\x1b[H")
+        buf.write(f"\x1b[1;1H\x1b[48;5;24m\x1b[97;1m{f'  {title}  ':{W}}\x1b[0m".encode())
+        if subtitle:
+            _draw_text(buf, 3, 2, subtitle)
+        _draw_text(
+            buf,
+            5,
+            2,
+            "Enter number and press Enter, or "
+            "\x1b[33m[Esc]\x1b[0m to cancel",
+        )
+        _draw_text(buf, 6, 2, f"Input: \x1b[1;97m{input_buf}\x1b[5m_\x1b[0m")
+
+        start_row = 8
+        for idx, option in enumerate(options):
+            marker = "\x1b[1;92m" if idx == current_idx else "\x1b[33m"
+            text = f"{marker}[{idx + 1:>2}]\x1b[0m {option}"
+            _draw_text(buf, start_row + idx, 4, text)
+
+        out.write(_SY_S + buf.getvalue() + _SY_E)
+        out.flush()
+
+        key = term.read_key_blocking(0.05)
+        if key is None:
+            continue
+        if key == "\x1b":
+            return None
+        if key == "\n" or key == "\r":
+            if not input_buf:
+                return current_idx
+            try:
+                selected = int(input_buf) - 1
+            except ValueError:
+                input_buf = ""
+                continue
+            if 0 <= selected < len(options):
+                return selected
+            input_buf = ""
+            continue
+        if key == "\x7f" or key == "\x08":
+            input_buf = input_buf[:-1]
+        elif key.isdigit():
+            input_buf += key
+
+
 def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
-                    ) -> list[CameraConfig]:
+                    , total_steps: int = 5) -> list[CameraConfig]:
     """Camera identification screen — live preview + name prompt."""
     configs: list[CameraConfig] = []
-    total_steps = 3
 
     mode_idx = 0   # start at "true" (24-bit truecolor)
     show_debug = False
@@ -672,7 +752,7 @@ def _get_airbot_robot(dev: DetectedDevice):
 
 
 def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
-                   ) -> list[RobotConfig]:
+                   , total_steps: int = 5) -> list[RobotConfig]:
     """Robot identification screen — oscillation + name prompt."""
     configs: list[RobotConfig] = []
     show_debug = False
@@ -874,15 +954,21 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
     return configs
 
 
-def _screen_project(term: _Term, out) -> tuple[str, str] | None:
-    """Project settings screen — name + storage root."""
+def _screen_settings(
+    term: _Term,
+    out,
+    *,
+    step: int = 3,
+    total_steps: int = 5,
+) -> tuple[str, str, str, str, str] | None:
+    """Project/settings screen — project, storage, mode, and codecs."""
     W, H = term.cols, term.rows
 
     out.write(_SY_S + b"\x1b[2J")
-    _draw_header(out, W, 3, 3, "Project Settings")
+    _draw_header(out, W, step, total_steps, "Project Settings")
 
     _draw_text(out, 4, 2,
-               "Configure project name and storage location.")
+               "Configure project, collection mode, and codecs.")
     out.write(_SY_E)
     out.flush()
 
@@ -894,7 +980,154 @@ def _screen_project(term: _Term, out) -> tuple[str, str] | None:
     if storage is None:
         return None
 
-    return name, storage
+    mode_idx = _pick_option(
+        term,
+        out,
+        title="COLLECTION MODE",
+        options=[label for _, label in MODE_OPTIONS],
+        current_idx=0,
+        subtitle="Choose the collection workflow to configure.",
+    )
+    if mode_idx is None:
+        return None
+    mode = MODE_OPTIONS[mode_idx][0]
+
+    rgb_options = list(available_rgb_codec_options())
+    rgb_idx = _pick_option(
+        term,
+        out,
+        title="RGB CODEC",
+        options=[option.label for option in rgb_options],
+        current_idx=0,
+        subtitle="Select the codec used for RGB camera streams.",
+    )
+    if rgb_idx is None:
+        return None
+    rgb_codec = rgb_options[rgb_idx].name
+
+    depth_options = list(available_depth_codec_options())
+    depth_idx = _pick_option(
+        term,
+        out,
+        title="DEPTH CODEC",
+        options=[option.label for option in depth_options],
+        current_idx=0,
+        subtitle="Select the codec used for depth/grayscale streams.",
+    )
+    if depth_idx is None:
+        return None
+    depth_codec = depth_options[depth_idx].name
+
+    return name, storage, mode, rgb_codec, depth_codec
+
+
+def _screen_teleop_pairs(
+    term: _Term,
+    out,
+    robots: list[RobotConfig],
+    *,
+    step: int = 4,
+    total_steps: int = 5,
+) -> list[TeleopPairConfig] | None:
+    """Configure explicit tele-op pairings for leader/follower robots."""
+    leaders = [robot for robot in robots if robot.role == "leader"]
+    followers = [robot for robot in robots if robot.role == "follower"]
+
+    if not leaders or not followers:
+        W = term.cols
+        out.write(_SY_S + b"\x1b[2J")
+        _draw_header(out, W, step, total_steps, "Tele-op Pairing")
+        _draw_text(
+            out,
+            4,
+            2,
+            "\x1b[91mTele-operation requires at least one leader and one follower robot.\x1b[0m",
+        )
+        _draw_text(out, 6, 2, "Press any key to cancel setup.")
+        out.write(_SY_E)
+        out.flush()
+        term.read_key_blocking()
+        return None
+
+    suggested = suggest_teleop_pairs(robots)
+    pairs: list[TeleopPairConfig] = []
+    remaining_leaders = list(leaders)
+    remaining_followers = list(followers)
+
+    for idx in range(min(len(leaders), len(followers))):
+        default_pair = suggested[idx] if idx < len(suggested) else None
+        W = term.cols
+        out.write(_SY_S + b"\x1b[2J")
+        _draw_header(out, W, step, total_steps, f"Tele-op Pairing ({idx + 1}/{min(len(leaders), len(followers))})")
+        _draw_text(
+            out,
+            4,
+            2,
+            "Select which leader controls which follower, and how the mapping works.",
+        )
+        out.write(_SY_E)
+        out.flush()
+
+        follower_default_idx = 0
+        if default_pair is not None:
+            for fi, follower in enumerate(remaining_followers):
+                if follower.name == default_pair.follower:
+                    follower_default_idx = fi
+                    break
+        follower_idx = _pick_option(
+            term,
+            out,
+            title=f"PAIR {idx + 1} — FOLLOWER",
+            options=[f"{robot.name} ({robot.type})" for robot in remaining_followers],
+            current_idx=follower_default_idx,
+            subtitle="Choose the follower arm to be controlled in this pair.",
+        )
+        if follower_idx is None:
+            return None
+        follower = remaining_followers.pop(follower_idx)
+
+        leader_default_idx = 0
+        if default_pair is not None:
+            for li, leader in enumerate(remaining_leaders):
+                if leader.name == default_pair.leader:
+                    leader_default_idx = li
+                    break
+        leader_idx = _pick_option(
+            term,
+            out,
+            title=f"PAIR {idx + 1} — LEADER",
+            options=[f"{robot.name} ({robot.type})" for robot in remaining_leaders],
+            current_idx=leader_default_idx,
+            subtitle="Choose the leader arm that drives the selected follower.",
+        )
+        if leader_idx is None:
+            return None
+        leader = remaining_leaders.pop(leader_idx)
+
+        mapper_options = [label for _, label in MAPPER_OPTIONS]
+        default_mapper = default_mapper_for_pair(leader, follower)
+        mapper_default_idx = 0 if default_mapper == "joint_direct" else 1
+        mapper_idx = _pick_option(
+            term,
+            out,
+            title=f"PAIR {idx + 1} — MAPPING",
+            options=mapper_options,
+            current_idx=mapper_default_idx,
+            subtitle="Choose direct joint mapping or FK-IK pose mapping for this pair.",
+        )
+        if mapper_idx is None:
+            return None
+        mapper = MAPPER_OPTIONS[mapper_idx][0]
+
+        pairs.append(TeleopPairConfig(
+            name=f"pair_{idx}",
+            leader=leader.name,
+            follower=follower.name,
+            mapper=mapper,
+        ))
+
+    validate_teleop_pairs(robots, pairs)
+    return pairs
 
 
 def _screen_summary(term: _Term, out,
@@ -904,7 +1137,14 @@ def _screen_summary(term: _Term, out,
                     rob_devs: list[DetectedDevice],
                     project_name: str,
                     storage_root: str,
-                    output_path: str) -> bool:
+                    output_path: str,
+                    *,
+                    mode: str,
+                    video_codec: str,
+                    depth_codec: str,
+                    teleop_pairs: list[TeleopPairConfig],
+                    step: int = 5,
+                    total_steps: int = 5) -> bool:
     """Live summary screen with camera previews + robot states.
 
     Returns True to save, False to cancel.
@@ -1004,7 +1244,7 @@ def _screen_summary(term: _Term, out,
             if _dt > 0:
                 _fps = 0.9 * _fps + 0.1 / _dt
 
-            _draw_header(buf, W, 3, 3, "Summary — Live Preview")
+            _draw_header(buf, W, step, total_steps, "Summary — Live Preview")
 
             # ── Layout: left panel (info), right panel (live previews) ──
             info_w = max(40, W // 3)
@@ -1021,6 +1261,18 @@ def _screen_summary(term: _Term, out,
             row += 1
             _draw_text_clear(buf, row, 2,
                              f"│ \x1b[1mStorage:\x1b[0m \x1b[90m{storage_root[:info_w-14]}\x1b[0m",
+                             info_w)
+            row += 1
+            _draw_text_clear(buf, row, 2,
+                             f"│ \x1b[1mMode:\x1b[0m \x1b[97;1m{mode}\x1b[0m",
+                             info_w)
+            row += 1
+            _draw_text_clear(buf, row, 2,
+                             f"│ \x1b[1mRGB codec:\x1b[0m \x1b[90m{video_codec[:info_w-16]}\x1b[0m",
+                             info_w)
+            row += 1
+            _draw_text_clear(buf, row, 2,
+                             f"│ \x1b[1mDepth codec:\x1b[0m \x1b[90m{depth_codec[:info_w-18]}\x1b[0m",
                              info_w)
             row += 1
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
@@ -1084,6 +1336,21 @@ def _screen_summary(term: _Term, out,
                                          f"│     \x1b[90m{info_line}\x1b[0m",
                                          info_w)
                         row += 1
+            if teleop_pairs:
+                _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
+                row += 1
+                _draw_text_clear(buf, row, 2,
+                                 f"│ \x1b[1;95mTele-op pairs ({len(teleop_pairs)})\x1b[0m",
+                                 info_w)
+                row += 1
+                for pair in teleop_pairs:
+                    mapper_label = "direct" if pair.mapper == "joint_direct" else "FK-IK"
+                    pair_text = f"│  \x1b[95m{pair.leader}\x1b[0m → \x1b[93m{pair.follower}\x1b[0m"
+                    _draw_text_clear(buf, row, 2, pair_text, info_w)
+                    row += 1
+                    _draw_text_clear(buf, row, 2,
+                                     f"│     \x1b[90m{mapper_label}\x1b[0m", info_w)
+                    row += 1
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
             row += 1
             _draw_text_clear(buf, row, 2,
@@ -1109,8 +1376,10 @@ def _screen_summary(term: _Term, out,
             # Draw camera previews in a grid
             if n_cams > 0:
                 mode = RENDER_MODES[mode_idx]
+                cam_title = "─── CAMERAS "
+                cam_title += "─" * max(0, preview_w - len(cam_title))
                 _draw_text(buf, preview_row, preview_col,
-                           f"\x1b[1;96m{'─── CAMERAS ':─<{preview_w}}\x1b[0m")
+                           f"\x1b[1;96m{cam_title[:preview_w]}\x1b[0m")
                 preview_row += 1
 
                 # Calculate grid dimensions
@@ -1175,8 +1444,10 @@ def _screen_summary(term: _Term, out,
 
             # Draw robot states
             if n_robs > 0:
+                rob_title = "─── ROBOTS "
+                rob_title += "─" * max(0, preview_w - len(rob_title))
                 _draw_text(buf, preview_row, preview_col,
-                           f"\x1b[1;93m{'─── ROBOTS ':─<{preview_w}}\x1b[0m")
+                           f"\x1b[1;93m{rob_title[:preview_w]}\x1b[0m")
                 preview_row += 1
                 bar_w = min(30, preview_w - 20)
 
@@ -1323,48 +1594,82 @@ def _screen_summary(term: _Term, out,
 #  Main wizard entry point
 # ═══════════════════════════════════════════════════════════════════════
 
-def run_wizard(output_path: str) -> RollioConfig | None:
+def run_wizard(
+    output_path: str,
+    *,
+    simulated_cameras: int = 0,
+    simulated_arms: int = 0,
+) -> RollioConfig | None:
     """Run the interactive setup wizard.  Returns config or None on abort."""
     print("Scanning for hardware…")
-    cam_devs = scan_cameras()
-    rob_devs = scan_robots()
+    cam_devs = scan_cameras(
+        include_simulated=simulated_cameras > 0,
+        simulated_count=simulated_cameras,
+    )
+    rob_devs = scan_robots(
+        include_simulated=simulated_arms > 0,
+        simulated_count=simulated_arms,
+    )
     print(f"  Found {len(cam_devs)} camera(s), {len(rob_devs)} robot(s).")
     print("Launching wizard TUI…")
     time.sleep(0.5)
 
     out = sys.stdout.buffer
+    total_steps = 5
 
     with _Term() as term:
         # Step 1: Cameras
-        cam_configs = _screen_cameras(term, out, cam_devs)
-        if not cam_configs:
-            cam_configs = [CameraConfig()]  # fallback pseudo
+        cam_configs = _screen_cameras(term, out, cam_devs, total_steps=total_steps)
 
         # Step 2: Robots
-        rob_configs = _screen_robots(term, out, rob_devs)
-        if not rob_configs:
-            rob_configs = [RobotConfig()]  # fallback pseudo
+        rob_configs = _screen_robots(term, out, rob_devs, total_steps=total_steps)
 
-        # Step 3: Project settings
-        proj = _screen_project(term, out)
-        if proj is None:
+        # Step 3: Project/settings
+        settings = _screen_settings(term, out, step=3, total_steps=total_steps)
+        if settings is None:
             return None
-        project_name, storage_root = proj
+        project_name, storage_root, mode, video_codec, depth_codec = settings
 
-        # Step 4: Live summary screen with previews
+        teleop_pairs: list[TeleopPairConfig] = []
+        if mode == "teleop":
+            pair_configs = _screen_teleop_pairs(
+                term,
+                out,
+                rob_configs,
+                step=4,
+                total_steps=total_steps,
+            )
+            if pair_configs is None:
+                return None
+            teleop_pairs = pair_configs
+
+        # Step 5: Live summary screen with previews
         should_save = _screen_summary(
             term, out,
             cam_configs, rob_configs,
             cam_devs, rob_devs,
             project_name, storage_root,
-            output_path)
+            output_path,
+            mode=mode,
+            video_codec=video_codec,
+            depth_codec=depth_codec,
+            teleop_pairs=teleop_pairs,
+            step=5,
+            total_steps=total_steps,
+        )
 
         if not should_save:
             return None
 
     return RollioConfig(
         project_name=project_name,
+        mode=mode,
         cameras=cam_configs,
         robots=rob_configs,
+        teleop_pairs=teleop_pairs,
         storage=StorageConfig(root=storage_root),
+        encoder=EncoderConfig(
+            video_codec=video_codec,
+            depth_codec=depth_codec,
+        ),
     )

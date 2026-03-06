@@ -13,24 +13,35 @@ starting point.
 ## How the config is created
 
 ```
-rollio setup [-o OUTPUT] [-f]
+rollio setup [-o OUTPUT] [-f] [--sim-cameras N] [--sim-arms N]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o`, `--output` | `rollio_config.yaml` | Path to write the config file |
 | `-f`, `--force` | off | Overwrite an existing config |
+| `--sim-cameras` | `0` | Number of simulated cameras to include during setup |
+| `--sim-arms` | `0` | Number of simulated robot arms to include during setup |
 
-The wizard walks through four screens:
+By default, setup only shows detected real hardware.  For local testing,
+add `--sim-cameras` and/or `--sim-arms` to make simulated devices appear.
 
-1. **Cameras** — scans for pseudo, V4L2, and RealSense cameras.  For each
+The wizard walks through five screens:
+
+1. **Cameras** — scans for V4L2 and RealSense cameras, plus any requested
+   simulated cameras. For each
    detected device, a live ASCII preview is shown.  You assign a channel
    name, choose pixel format and resolution.
-2. **Robots** — scans for pseudo and AIRBOT Play arms (via CAN bus).  For
+2. **Robots** — scans for AIRBOT Play arms (via CAN bus), plus any
+   requested simulated arms. For
    each detected device, joint positions are displayed live.  You assign a
    channel name and role (leader / follower).
-3. **Project settings** — project name and storage root directory.
-4. **Summary** — live preview of all selected cameras and robots.
+3. **Project settings** — project name, storage root, collection mode,
+   RGB codec, and depth codec.
+4. **Tele-op pairing** — shown only for `mode: teleop`.  You explicitly
+   choose which leader controls which follower, and whether the pair uses
+   direct joint mapping or FK-IK pose mapping.
+5. **Summary** — live preview of all selected cameras and robots.
    Press Enter to save, Esc to cancel.
 
 After saving, start data collection with:
@@ -64,11 +75,11 @@ mode: teleop
 ## `cameras` — camera configuration
 
 A list of camera entries.  Each entry represents one image stream that will
-be recorded as an MP4 video track per episode.
+be recorded as a video track per episode.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | `"cam0"` | Channel name.  Used in file paths (`videos/chunk-000/{name}/episode_*.mp4`) and LeRobot feature keys (`observation.images.{name}`). Must be unique. |
+| `name` | string | `"cam0"` | Channel name.  Used in file paths (`videos/chunk-000/{name}/episode_*`) and LeRobot feature keys (`observation.images.{name}`). Must be unique. |
 | `type` | string | `"pseudo"` | Camera driver type.  One of `"pseudo"`, `"v4l2"`, `"realsense"`. |
 | `device` | int or string | `0` | Device identifier.  For V4L2: device index (e.g. `0` → `/dev/video0`).  For RealSense: `"<serial>:<channel>"` (e.g. `"335522070371:color"`). |
 | `width` | int | `640` | Frame width in pixels. |
@@ -241,6 +252,65 @@ robots:
 
 ---
 
+## `teleop_pairs` — explicit tele-operation relationships
+
+When `mode: teleop`, setup writes an explicit list of pairings so you can
+control which leader drives which follower and which mapping each pair uses.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique pair name |
+| `leader` | string | Name of the robot configured as the leader |
+| `follower` | string | Name of the robot configured as the follower |
+| `mapper` | string | `"joint_direct"` or `"pose_fk_ik"` |
+
+`joint_direct` is the default when leader/follower robots are compatible
+same-type robots with matching joint counts.  Otherwise, setup defaults the
+pair to `pose_fk_ik`.
+
+### Example
+
+```yaml
+teleop_pairs:
+  - name: pair_0
+    leader: left_leader
+    follower: left_follower
+    mapper: joint_direct
+
+  - name: pair_1
+    leader: right_leader
+    follower: right_follower
+    mapper: pose_fk_ik
+```
+
+---
+
+## `encoder` — RGB/depth export codecs
+
+Controls the codecs used when episode videos are exported.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `video_codec` | string | `"libx264"` | Codec for RGB/color streams |
+| `depth_codec` | string | `"ffv1"` | Codec for depth/grayscale streams |
+| `background_workers` | int | `1` | Background export workers |
+
+The setup wizard shows only codecs that are usable on the current machine.
+For RGB streams, it prefers the best available hardware H.264 encoder first,
+then software H.264, then MPEG-4. Depth/grayscale streams default to
+lossless codecs.
+
+### Example
+
+```yaml
+encoder:
+  video_codec: h264_nvenc
+  depth_codec: ffv1
+  background_workers: 1
+```
+
+---
+
 ## `storage` — data output settings
 
 Controls where recorded episodes are written.
@@ -333,15 +403,32 @@ cameras:
     channels: []
 
 robots:
-  - name: arm_0
+  - name: leader_arm
+    type: pseudo
+    role: leader
+    num_joints: 6
+    device: ""
+
+  - name: follower_arm
     type: pseudo
     role: follower
     num_joints: 6
     device: ""
 
+teleop_pairs:
+  - name: pair_0
+    leader: leader_arm
+    follower: follower_arm
+    mapper: joint_direct
+
 storage:
   root: ~/rollio_data
   lerobot_version: v2.1
+
+encoder:
+  video_codec: libx264
+  depth_codec: ffv1
+  background_workers: 1
 
 controls:
   start_stop: " "
@@ -432,9 +519,25 @@ robots:
     num_joints: 6
     device: can3
 
+teleop_pairs:
+  - name: pair_0
+    leader: left_leader
+    follower: left_follower
+    mapper: joint_direct
+
+  - name: pair_1
+    leader: right_leader
+    follower: right_follower
+    mapper: joint_direct
+
 storage:
   root: ~/rollio_data
   lerobot_version: v2.1
+
+encoder:
+  video_codec: h264_nvenc
+  depth_codec: ffv1
+  background_workers: 1
 
 controls:
   start_stop: " "
