@@ -74,7 +74,7 @@ class LeRobotV21Writer:
 
         # ── Update meta ──────────────────────────────────────────
         self._total_episodes = max(self._total_episodes, idx + 1)
-        self._total_frames += self._count_frames(ep)
+        self._total_frames += self._target_row_count(ep)
         self._write_meta()
 
         return self._root
@@ -96,10 +96,9 @@ class LeRobotV21Writer:
             writer.release()
 
     def _write_parquet(self, path: Path, ep: EpisodeData) -> None:
-        # Build aligned rows at the recording FPS
-        # Use robot timestamps as the canonical axis
-        n_frames = self._count_frames(ep)
-        if n_frames == 0:
+        timestamps = self._target_timestamps(ep)
+        n_rows = len(timestamps)
+        if n_rows == 0:
             return
 
         rows: dict[str, list] = {
@@ -119,57 +118,78 @@ class LeRobotV21Writer:
         if self._robot_names:
             rows["action"] = []
 
-        states = ep.robot_states
-        # Use the first robot's timestamps as canonical
-        if self._robot_names:
-            first_rob = self._robot_names[0]
-            state_list = states.get(first_rob, [])
-        else:
-            state_list = []
+        sampled_states: dict[str, list[dict[str, np.ndarray]]] = {}
+        for rob_name in self._robot_names:
+            state_list = ep.robot_states.get(rob_name, [])
+            sampled_states[rob_name] = [
+                self._sample_state_at(state_list, ts)
+                for ts in timestamps
+            ]
 
-        for i in range(n_frames):
+        for i, ts in enumerate(timestamps):
             rows["frame_index"].append(i)
             rows["episode_index"].append(ep.episode_index)
             rows["index"].append(self._total_frames + i)
-
-            if i < len(state_list):
-                ts, st = state_list[i]
-                rows["timestamp"].append(float(ts))
-            else:
-                rows["timestamp"].append(i / max(ep.fps, 1))
+            rows["timestamp"].append(float(ts))
 
             for rob_name in self._robot_names:
-                rob_states = states.get(rob_name, [])
-                if i < len(rob_states):
-                    _, st = rob_states[i]
-                else:
-                    st = {"position": np.zeros(self._num_joints, np.float32),
-                          "velocity": np.zeros(self._num_joints, np.float32),
-                          "effort":   np.zeros(self._num_joints, np.float32)}
+                st = sampled_states[rob_name][i]
                 for key in ("position", "velocity", "effort"):
                     col = f"observation.state.{rob_name}.{key}"
-                    rows[col].append(st.get(key, np.zeros(0)).tolist())
+                    default = np.zeros(self._num_joints, np.float32)
+                    rows[col].append(st.get(key, default).tolist())
 
-            # Action = next position of first robot (shifted by 1)
+            # Action = next sampled position of the first robot.
             if self._robot_names:
-                next_i = min(i + 1, len(state_list) - 1)
-                if next_i >= 0 and next_i < len(state_list):
-                    _, ns = state_list[next_i]
-                    rows["action"].append(
-                        ns.get("position", np.zeros(0)).tolist())
-                else:
-                    rows["action"].append([0.0] * self._num_joints)
+                first_rob = self._robot_names[0]
+                next_i = min(i + 1, n_rows - 1)
+                ns = sampled_states[first_rob][next_i]
+                rows["action"].append(
+                    ns.get("position", np.zeros(self._num_joints, np.float32)).tolist()
+                )
 
         table = pa.table(rows)
         pq.write_table(table, str(path))
 
-    def _count_frames(self, ep: EpisodeData) -> int:
-        counts = []
-        for v in ep.camera_frames.values():
-            counts.append(len(v))
-        for v in ep.robot_states.values():
-            counts.append(len(v))
-        return max(counts) if counts else 0
+    def _sample_state_at(
+        self,
+        state_list: list[tuple[float, dict[str, np.ndarray]]],
+        timestamp: float,
+    ) -> dict[str, np.ndarray]:
+        if not state_list:
+            return {
+                "position": np.zeros(self._num_joints, np.float32),
+                "velocity": np.zeros(self._num_joints, np.float32),
+                "effort": np.zeros(self._num_joints, np.float32),
+            }
+
+        state_timestamps = np.asarray([ts for ts, _ in state_list], dtype=np.float64)
+        idx = int(np.searchsorted(state_timestamps, timestamp, side="left"))
+        if idx <= 0:
+            chosen = state_list[0][1]
+        elif idx >= len(state_list):
+            chosen = state_list[-1][1]
+        else:
+            prev_ts = state_timestamps[idx - 1]
+            next_ts = state_timestamps[idx]
+            chosen = state_list[idx - 1][1] if abs(timestamp - prev_ts) <= abs(next_ts - timestamp) else state_list[idx][1]
+
+        return {
+            key: np.asarray(value, dtype=np.float32)
+            for key, value in chosen.items()
+        }
+
+    def _target_row_count(self, ep: EpisodeData) -> int:
+        return len(self._target_timestamps(ep))
+
+    def _target_timestamps(self, ep: EpisodeData) -> np.ndarray:
+        if ep.duration <= 0:
+            return np.zeros(1, dtype=np.float64)
+
+        n_rows = max(1, int(round(ep.duration * max(ep.fps, 1))) + 1)
+        if n_rows == 1:
+            return np.zeros(1, dtype=np.float64)
+        return np.linspace(0.0, float(ep.duration), n_rows, dtype=np.float64)
 
     def _write_meta(self) -> None:
         meta_dir = self._root / "meta"

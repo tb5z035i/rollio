@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pyarrow.parquet as pq
 
 from rollio.collect import AsyncCollectionRuntime
 from rollio.config import (
@@ -144,10 +145,26 @@ def test_async_runtime_exports_in_background(tmp_path: Path) -> None:
         assert (dataset_root / "videos" / "chunk-000" / "cam_left" / "episode_000000.mp4").exists()
         assert (dataset_root / "videos" / "chunk-000" / "cam_right" / "episode_000001.mp4").exists()
 
+        info = (dataset_root / "meta" / "info.json").read_text()
+        assert '"fps": 10' in info
+
         assert episode_0.mapper_modes["direct_pair"] == "joint_direct"
         assert episode_0.mapper_modes["pose_pair"] == "pose_fk_ik"
         assert episode_1.mapper_modes["direct_pair"] == "joint_direct"
         assert episode_1.mapper_modes["pose_pair"] == "pose_fk_ik"
+
+        ep0_table = pq.read_table(dataset_root / "data" / "chunk-000" / "episode_000000.parquet")
+        ep1_table = pq.read_table(dataset_root / "data" / "chunk-000" / "episode_000001.parquet")
+        expected_rows_ep0 = int(round(episode_0.duration * 10)) + 1
+        expected_rows_ep1 = int(round(episode_1.duration * 10)) + 1
+        assert ep0_table.num_rows == expected_rows_ep0
+        assert ep1_table.num_rows == expected_rows_ep1
+        assert f'"total_frames": {expected_rows_ep0 + expected_rows_ep1}' in info
+
+        for table in (ep0_table, ep1_table):
+            ts = table.column("timestamp").to_pylist()
+            effective_hz = (len(ts) - 1) / (ts[-1] - ts[0])
+            assert abs(effective_hz - 10.0) < 0.2
 
         leader_a = _last_position(episode_1, "leader_a")
         follower_a = _last_position(episode_1, "follower_a")
