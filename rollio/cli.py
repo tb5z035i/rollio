@@ -62,7 +62,11 @@ def _cmd_collect(args: argparse.Namespace) -> None:
     print(f"FPS:     {cfg.fps}")
     print("Starting TUI…")
 
-    run_collection(cfg)
+    try:
+        run_collection(cfg)
+    except (ImportError, RuntimeError, OSError) as exc:
+        print(f"Collection startup failed: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _cmd_test(args: argparse.Namespace) -> None:

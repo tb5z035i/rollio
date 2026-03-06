@@ -24,6 +24,8 @@ Also, the storage backend should support:
 
 When implementing, also provide with a python-based simple web server to save the file uploaded.
 
+The post-processing stage for one episode, especially video encoding and other data encoding/export, should also be designed to run asynchronously in the background as much as possible. Finishing one episode should not force the operator to wait for the full encoding/export of that episode before starting the next one, except for short bounded delays that are necessary to safely rotate buffers, flush handles, or guarantee correctness.
+
 ## Visual Data 
 
 The image sensors and the corresponding channels that should support:
@@ -74,6 +76,10 @@ The necessity of setup wizard is to scan the existance of supported hardware (ca
 
 The setup wizard should also be able to modify the configuration based on a given or default config, and save to a new config file. This should happen when the task or other meta information changes.
 
+When implementing the formal data collection stage, it is preferred to reuse the already implemented configuration-stage TUI interface and the current module layout in the TUI package as much as possible. The data collecting logic can be redesigned from scratch, but the configuration-stage user experience and module structure should remain the base to build on.
+
+When possible, the implementation and interfaces of the camera and robot modules that are already used in the configuration stage should also be reused in the formal data collection stage on a best-effort basis. In other words, the collector should prefer to build on the same hardware abstractions, scanning results, metadata, and configuration contracts that are already used during setup, instead of introducing a fully separate hardware interface layer unless this is necessary for correctness or performance.
+
 ## 2. Formal Data Collection
 
 Currently two forms are supported for the data collection process: tele-operation and human-intervention. The mode to use should be configured in setup wizard
@@ -90,11 +96,15 @@ The live preview of cameras are also broadcasted via rtsp.
 
 The beginning and finishing of one episodes should be signaled by external control input. After finishing each episodes, one should be able to keep or discard the episodes that are just collected. The binding of "start", "stop", "keep", "discard" to the detailed action on external control input devices should be configurable in setup wizards with default values. 
 
+The collection pipeline should therefore support asynchronous background workers for online video encoding, tabular data writing, and final dataset export/packaging. The foreground data collection loop should only do the minimum work needed to safely end the current episode and start the next one quickly.
+
 ### Tele-Operation Mode:
 
 In tele-operation mode, the leading arms are in gravity compensation mode, in which the end effector of the leading arm can be manually dragged freely. And the following arms closely follow the leading arms to finish the task.
 
 In this mode, it is possible to have 1 arm following 1 arm and 2 arms following 2 arms (left and right). The proprioceptive data from all 2 and 4 arms should be recorded accordingly. Which one is leading and which one is following should be specified in the configuring step of the setup wizard
+
+For the mapping from leader to follower in tele-operation mode, it is preferred to use direct mapping in joint space whenever possible. In other words, if the leader and follower are compatible and the leader supports joint-space data collection, the system should directly map leader joint states to follower targets. If the leader and follower are different robot types, or if the leader does not provide joint-space data that can be collected directly (for example, a VR controller or other 6D input device), then the system should fall back to pose-based mapping via forward kinematics on the leader side and inverse kinematics on the follower side.
 
 ### Human Intervention Mode:
 
