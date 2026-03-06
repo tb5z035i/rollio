@@ -1323,11 +1323,22 @@ def _screen_summary(term: _Term, out,
 #  Main wizard entry point
 # ═══════════════════════════════════════════════════════════════════════
 
-def run_wizard(output_path: str) -> RollioConfig | None:
+def run_wizard(
+    output_path: str,
+    *,
+    simulated_cameras: int = 0,
+    simulated_arms: int = 0,
+) -> RollioConfig | None:
     """Run the interactive setup wizard.  Returns config or None on abort."""
     print("Scanning for hardware…")
-    cam_devs = scan_cameras()
-    rob_devs = scan_robots()
+    cam_devs = scan_cameras(
+        include_simulated=simulated_cameras > 0,
+        simulated_count=simulated_cameras,
+    )
+    rob_devs = scan_robots(
+        include_simulated=simulated_arms > 0,
+        simulated_count=simulated_arms,
+    )
     print(f"  Found {len(cam_devs)} camera(s), {len(rob_devs)} robot(s).")
     print("Launching wizard TUI…")
     time.sleep(0.5)
@@ -1337,13 +1348,9 @@ def run_wizard(output_path: str) -> RollioConfig | None:
     with _Term() as term:
         # Step 1: Cameras
         cam_configs = _screen_cameras(term, out, cam_devs)
-        if not cam_configs:
-            cam_configs = [CameraConfig()]  # fallback pseudo
 
         # Step 2: Robots
         rob_configs = _screen_robots(term, out, rob_devs)
-        if not rob_configs:
-            rob_configs = [RobotConfig()]  # fallback pseudo
 
         # Step 3: Project settings
         proj = _screen_project(term, out)
