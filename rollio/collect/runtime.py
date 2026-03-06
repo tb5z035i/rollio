@@ -42,6 +42,14 @@ class RecordedEpisode:
     stopped_at: float
     mapper_modes: dict[str, str]
 
+    @property
+    def episode_index(self) -> int:
+        return self.data.episode_index
+
+    @property
+    def duration(self) -> float:
+        return self.data.duration
+
 
 @dataclass
 class TeleopPairBinding:
@@ -406,6 +414,15 @@ class AsyncCollectionRuntime:
         with self._state_lock:
             return self._current_episode is not None
 
+    @property
+    def elapsed(self) -> float:
+        with self._state_lock:
+            episode = self._current_episode
+            if episode is None:
+                return 0.0
+            started_at = episode._started_at  # noqa: SLF001
+        return max(0.0, time.monotonic() - started_at)
+
     def open(self) -> None:
         if self._opened:
             return
@@ -523,6 +540,12 @@ class AsyncCollectionRuntime:
 
     def export_records(self) -> dict[int, ExportRecord]:
         return self._exporter.records()
+
+    def export_status(self) -> tuple[int, int]:
+        records = self._exporter.records().values()
+        pending = sum(1 for record in records if not record.done_event.is_set())
+        completed = sum(1 for record in records if record.done_event.is_set() and record.error is None)
+        return pending, completed
 
     def latest_frames(self) -> dict[str, np.ndarray | None]:
         with self._state_lock:
