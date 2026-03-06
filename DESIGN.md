@@ -76,6 +76,8 @@ The setup wizard should also be able to modify the configuration based on a give
 
 When implementing the formal data collection stage, it is preferred to reuse the already implemented configuration-stage TUI interface and the current module layout in the TUI package as much as possible. The data collecting logic can be redesigned from scratch, but the configuration-stage user experience and module structure should remain the base to build on.
 
+When possible, the implementation and interfaces of the camera and robot modules that are already used in the configuration stage should also be reused in the formal data collection stage on a best-effort basis. In other words, the collector should prefer to build on the same hardware abstractions, scanning results, metadata, and configuration contracts that are already used during setup, instead of introducing a fully separate hardware interface layer unless this is necessary for correctness or performance.
+
 ## 2. Formal Data Collection
 
 Currently two forms are supported for the data collection process: tele-operation and human-intervention. The mode to use should be configured in setup wizard
