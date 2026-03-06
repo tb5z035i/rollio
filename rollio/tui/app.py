@@ -8,16 +8,11 @@ import sys
 import termios
 import time
 import tty
-from pathlib import Path
 
 import numpy as np
 
+from rollio.collect import AsyncCollectionRuntime, RecordedEpisode
 from rollio.config.schema import RollioConfig
-from rollio.episode.recorder import EpisodeRecorder, EpisodeData
-from rollio.episode.writer import LeRobotV21Writer
-from rollio.sensors.base import ImageSensor, RobotSensor
-from rollio.sensors.pseudo_camera import PseudoCamera
-from rollio.sensors.pseudo_robot import PseudoRobot
 from rollio.tui.renderer import (
     RENDER_MODES, MODE_LABELS, blit_frame, calc_render_size, render_frame,
 )
@@ -25,31 +20,6 @@ from rollio.tui.renderer import (
 # ── Synchronised output ───────────────────────────────────────────────
 _SYNC_S = b"\x1b[?2026h"
 _SYNC_E = b"\x1b[?2026l"
-
-
-# ═══════════════════════════════════════════════════════════════════════
-#  Sensor factory
-# ═══════════════════════════════════════════════════════════════════════
-
-def _build_sensors(cfg: RollioConfig) -> tuple[
-        dict[str, ImageSensor], dict[str, RobotSensor]]:
-    cameras: dict[str, ImageSensor] = {}
-    for cc in cfg.cameras:
-        if cc.type == "pseudo":
-            cameras[cc.name] = PseudoCamera(
-                name=cc.name, width=cc.width, height=cc.height, fps=cc.fps)
-        else:
-            raise NotImplementedError(f"Camera type '{cc.type}' not yet implemented")
-
-    robots: dict[str, RobotSensor] = {}
-    for rc in cfg.robots:
-        if rc.type == "pseudo":
-            robots[rc.name] = PseudoRobot(
-                name=rc.name, n_joints=rc.num_joints, role=rc.role)
-        else:
-            raise NotImplementedError(f"Robot type '{rc.type}' not yet implemented")
-
-    return cameras, robots
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -79,7 +49,12 @@ class _Term:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.orig)
 
     def _resize(self):
-        self.cols, self.rows = os.get_terminal_size()
+        try:
+            cols, rows = os.get_terminal_size()
+        except OSError:
+            cols, rows = 80, 24
+        self.cols = max(cols, 40)
+        self.rows = max(rows, 10)
 
     def key(self) -> str | None:
         if select.select([sys.stdin], [], [], 0)[0]:
@@ -136,33 +111,20 @@ def _robot_panel(states: dict[str, dict[str, np.ndarray] | None],
 
 def run_collection(cfg: RollioConfig) -> None:
     """Run the data collection TUI."""
-    cameras, robots = _build_sensors(cfg)
-
-    # Open all sensors
-    for c in cameras.values():
-        c.open()
-    for r in robots.values():
-        r.open()
-
-    recorder = EpisodeRecorder(cameras, robots, fps=cfg.fps)
-    writer = LeRobotV21Writer(
-        root=cfg.storage.root,
-        project_name=cfg.project_name,
-        fps=cfg.fps,
-    )
+    runtime = AsyncCollectionRuntime.from_config(cfg)
 
     episodes_kept = 0
-    pending_episode: EpisodeData | None = None
+    pending_episode: RecordedEpisode | None = None
     mode_idx = 1   # start at "16" (lower bandwidth)
     show_debug = False
     _t_prev_frame = time.monotonic()
     actual_fps = 0.0
+    runtime.open()
 
-    with _Term() as term:
-        out = sys.stdout.buffer
-        target_dt = 1.0 / cfg.fps
-
-        try:
+    try:
+        with _Term() as term:
+            out = sys.stdout.buffer
+            target_dt = 1.0 / max(cfg.fps, 1)
             while True:
                 t0 = time.monotonic()
                 _frame_dt = t0 - _t_prev_frame
@@ -180,28 +142,24 @@ def run_collection(cfg: RollioConfig) -> None:
                 elif key == "\\":
                     show_debug = not show_debug
                 elif key == cfg.controls.start_stop:
-                    if recorder.recording:
-                        pending_episode = recorder.stop()
+                    if runtime.recording:
+                        pending_episode = runtime.stop_episode()
                     else:
-                        recorder.start()
+                        runtime.start_episode()
                 elif key == cfg.controls.keep and pending_episode is not None:
-                    writer.write(pending_episode)
+                    runtime.keep_episode(pending_episode)
                     episodes_kept += 1
                     pending_episode = None
                 elif key == cfg.controls.discard and pending_episode is not None:
+                    runtime.discard_episode(pending_episode)
                     pending_episode = None
 
-                # ── Read sensors ─────────────────────────────────
+                pending_exports, completed_exports = runtime.export_status()
+
+                # ── Read runtime caches ───────────────────────────
                 _t_sns = time.monotonic()
-                if recorder.recording:
-                    latest_frames = recorder.tick()
-                    _, latest_states = recorder.peek_sensors()
-                    robot_display = {}
-                    for name, rob in robots.items():
-                        _, st = rob.read()
-                        robot_display[name] = st
-                else:
-                    latest_frames, robot_display = recorder.peek_sensors()
+                latest_frames = runtime.latest_frames()
+                robot_display = runtime.latest_robot_states()
                 _t_sns = time.monotonic() - _t_sns
 
                 # ── Layout ───────────────────────────────────────
@@ -270,9 +228,9 @@ def run_collection(cfg: RollioConfig) -> None:
                             f"\x1b[0m".encode())
 
                 # ── Status bar ───────────────────────────────────
-                if recorder.recording:
+                if runtime.recording:
                     state_str = (f"\x1b[1;91m● REC  "
-                                 f"{recorder.elapsed:.1f}s\x1b[0m")
+                                 f"{runtime.elapsed:.1f}s\x1b[0m")
                 elif pending_episode is not None:
                     state_str = (f"\x1b[1;93m■ REVIEW  "
                                  f"ep#{pending_episode.episode_index} "
@@ -283,6 +241,7 @@ def run_collection(cfg: RollioConfig) -> None:
 
                 bar1 = (f" {state_str}  │  "
                         f"Ep: {episodes_kept}  │  "
+                        f"Export: {pending_exports} pending/{completed_exports} done  │  "
                         f"FPS: {actual_fps:.0f}  │  "
                         f"{MODE_LABELS[render_mode]}  │  "
                         f"[SPACE]=rec  [k]=keep  [d]=discard  "
@@ -305,9 +264,5 @@ def run_collection(cfg: RollioConfig) -> None:
                 dt = time.monotonic() - t0
                 if dt < target_dt:
                     time.sleep(target_dt - dt)
-
-        finally:
-            for c in cameras.values():
-                c.close()
-            for r in robots.values():
-                r.close()
+    finally:
+        runtime.close()

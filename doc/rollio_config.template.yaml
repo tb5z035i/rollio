@@ -1,0 +1,183 @@
+# ╔═══════════════════════════════════════════════════════════════════════╗
+# ║  Rollio Configuration Template                                       ║
+# ║                                                                      ║
+# ║  Copy this file, fill in your values, and pass it to:               ║
+# ║    rollio collect --config <your_config>.yaml                        ║
+# ║                                                                      ║
+# ║  Or generate one interactively:                                      ║
+# ║    rollio setup -o <your_config>.yaml                                ║
+# ╚═══════════════════════════════════════════════════════════════════════╝
+
+# ── Project ───────────────────────────────────────────────────────────────
+# project_name: Subdirectory name under storage.root.
+# description:  Free text — describe the task being recorded.
+# fps:          Global sampling rate for episode recording (Hz).
+# mode:         "teleop" (leader/follower) or "intervention" (external cmd).
+
+project_name: default
+description: ""
+fps: 30
+mode: teleop
+
+# ── Cameras ───────────────────────────────────────────────────────────────
+# Each entry is one video stream recorded per episode.
+#
+# Fields:
+#   name:         Unique channel name (used in file paths and feature keys).
+#   type:         Driver — "pseudo" | "v4l2" | "realsense".
+#   device:       Device identifier.
+#                   v4l2:      integer index (0 → /dev/video0).
+#                   realsense: "<serial>:<channel>" (e.g. "335522070371:color").
+#                   pseudo:    ignored.
+#   width/height: Capture resolution in pixels.
+#   fps:          Capture framerate (should be ≥ global fps).
+#   pixel_format: Fourcc / format code.
+#                   v4l2:      "MJPG" (recommended) | "YUYV".
+#                   realsense: "bgr8" (color) | "z16" (depth) | "y8" (IR).
+#                   pseudo:    "rgb24".
+#   id_path:      (v4l2 only) udev ID_PATH for stable device identification.
+#   channel:      (realsense only) "color" | "depth" | "infrared".
+#   channels:     Reserved for multi-channel mode. Leave as [].
+
+cameras:
+  # --- Example: USB webcam via V4L2 ---
+  # - name: wrist_cam
+  #   type: v4l2
+  #   device: 0
+  #   width: 640
+  #   height: 480
+  #   fps: 30
+  #   pixel_format: MJPG
+  #   id_path: ""          # auto-filled by 'rollio setup'
+  #   channel: color
+  #   channels: []
+
+  # --- Example: RealSense color stream ---
+  # - name: overhead_color
+  #   type: realsense
+  #   device: "335522070371:color"
+  #   width: 1920
+  #   height: 1080
+  #   fps: 30
+  #   pixel_format: bgr8
+  #   id_path: ""
+  #   channel: color
+  #   channels: []
+
+  # --- Example: RealSense depth stream ---
+  # - name: overhead_depth
+  #   type: realsense
+  #   device: "335522070371:depth"
+  #   width: 1280
+  #   height: 720
+  #   fps: 30
+  #   pixel_format: z16
+  #   id_path: ""
+  #   channel: depth
+  #   channels: []
+
+  # --- Example: RealSense infrared stream ---
+  # - name: overhead_ir
+  #   type: realsense
+  #   device: "335522070371:infrared"
+  #   width: 1280
+  #   height: 800
+  #   fps: 30
+  #   pixel_format: y8
+  #   id_path: ""
+  #   channel: infrared
+  #   channels: []
+
+  # --- Fallback: pseudo camera (for testing) ---
+  - name: cam_0
+    type: pseudo
+    device: 0
+    width: 640
+    height: 480
+    fps: 30
+    pixel_format: rgb24
+    id_path: ""
+    channel: color
+    channels: []
+
+# ── Robots ────────────────────────────────────────────────────────────────
+# Each entry is one proprioception channel recorded per episode.
+#
+# Fields:
+#   name:       Unique channel name (used in Parquet column names).
+#   type:       Driver — "pseudo" | "airbot_play" | "nero".
+#   role:       "leader" (gravity-comp, operator-guided) or "follower".
+#   num_joints: Degrees of freedom.
+#   device:     Device identifier.
+#                 airbot_play: CAN interface name (e.g. "can0").
+#                 pseudo/nero: ignored.
+
+robots:
+  # --- Example: AIRBOT Play single-arm tele-op ---
+  # - name: follower_arm
+  #   type: airbot_play
+  #   role: follower
+  #   num_joints: 6
+  #   device: can0
+  #
+  # - name: leader_arm
+  #   type: airbot_play
+  #   role: leader
+  #   num_joints: 6
+  #   device: can1
+
+  # --- Example: AIRBOT Play bimanual ---
+  # - name: left_follower
+  #   type: airbot_play
+  #   role: follower
+  #   num_joints: 6
+  #   device: can0
+  #
+  # - name: right_follower
+  #   type: airbot_play
+  #   role: follower
+  #   num_joints: 6
+  #   device: can1
+  #
+  # - name: left_leader
+  #   type: airbot_play
+  #   role: leader
+  #   num_joints: 6
+  #   device: can2
+  #
+  # - name: right_leader
+  #   type: airbot_play
+  #   role: leader
+  #   num_joints: 6
+  #   device: can3
+
+  # --- Fallback: pseudo robot (for testing) ---
+  - name: arm_0
+    type: pseudo
+    role: follower
+    num_joints: 6
+    device: ""
+
+# ── Storage ───────────────────────────────────────────────────────────────
+# root:            Base directory. Episodes are written to {root}/{project_name}/.
+# lerobot_version: Dataset format. "v2.1" (episode-based, fully supported)
+#                  or "v3.0" (sharded, planned).
+
+storage:
+  root: ~/rollio_data
+  lerobot_version: v2.1
+
+# ── Controls ──────────────────────────────────────────────────────────────
+# Keyboard shortcuts for the data-collection TUI.
+#
+# Workflow:
+#   1. Press start_stop to begin recording.
+#   2. Perform the task.
+#   3. Press start_stop to stop recording.
+#   4. Press keep to save, or discard to throw away.
+#   5. Repeat.
+
+controls:
+  start_stop: " "   # space bar
+  keep: k
+  discard: d

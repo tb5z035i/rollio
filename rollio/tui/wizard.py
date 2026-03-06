@@ -66,7 +66,12 @@ class _Term:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.orig)
 
     def _resize(self):
-        self.cols, self.rows = os.get_terminal_size()
+        try:
+            cols, rows = os.get_terminal_size()
+        except OSError:
+            cols, rows = 80, 24
+        self.cols = max(cols, 40)
+        self.rows = max(rows, 10)
 
     def read_key(self) -> str | None:
         if select.select([sys.stdin], [], [], 0)[0]:
@@ -863,6 +868,7 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                 type=dev.dtype,
                 role=chosen_role,
                 num_joints=dev.properties.get("num_joints", 6),
+                device=str(dev.properties.get("can_interface", dev.device_id)),
             ))
 
     return configs

@@ -47,6 +47,33 @@ class StorageConfig(BaseModel):
     lerobot_version: Literal["v2.1", "v3.0"] = "v2.1"
 
 
+class EncoderConfig(BaseModel):
+    video_codec: str = "mp4v"
+    depth_codec: Literal["raw", "ffv1"] = "raw"
+    background_workers: int = 1
+
+
+class UploadConfig(BaseModel):
+    enabled: bool = False
+    endpoint: str = ""
+    api_key_env: str = ""
+
+
+class AsyncPipelineConfig(BaseModel):
+    export_queue_size: int = 4
+    telemetry_hz: int = 50
+    control_hz: int = 100
+    max_pending_episodes: int = 8
+    allow_drop_preview_frames: bool = True
+
+
+class TeleopPairConfig(BaseModel):
+    name: str
+    leader: str
+    follower: str
+    mapper: Literal["auto", "joint_direct", "pose_fk_ik"] = "auto"
+
+
 class ControlConfig(BaseModel):
     start_stop: str = " "          # space bar
     keep: str = "k"
@@ -65,7 +92,11 @@ class RollioConfig(BaseModel):
         default_factory=lambda: [CameraConfig()])
     robots: list[RobotConfig] = Field(
         default_factory=lambda: [RobotConfig()])
+    teleop_pairs: list[TeleopPairConfig] = Field(default_factory=list)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    encoder: EncoderConfig = Field(default_factory=EncoderConfig)
+    upload: UploadConfig = Field(default_factory=UploadConfig)
+    async_pipeline: AsyncPipelineConfig = Field(default_factory=AsyncPipelineConfig)
     controls: ControlConfig = Field(default_factory=ControlConfig)
 
     # ── I/O helpers ────────────────────────────────────────────────
