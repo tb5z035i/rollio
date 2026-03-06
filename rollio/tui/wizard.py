@@ -1376,8 +1376,10 @@ def _screen_summary(term: _Term, out,
             # Draw camera previews in a grid
             if n_cams > 0:
                 mode = RENDER_MODES[mode_idx]
+                cam_title = "─── CAMERAS "
+                cam_title += "─" * max(0, preview_w - len(cam_title))
                 _draw_text(buf, preview_row, preview_col,
-                           f"\x1b[1;96m{'─── CAMERAS ':─<{preview_w}}\x1b[0m")
+                           f"\x1b[1;96m{cam_title[:preview_w]}\x1b[0m")
                 preview_row += 1
 
                 # Calculate grid dimensions
@@ -1442,8 +1444,10 @@ def _screen_summary(term: _Term, out,
 
             # Draw robot states
             if n_robs > 0:
+                rob_title = "─── ROBOTS "
+                rob_title += "─" * max(0, preview_w - len(rob_title))
                 _draw_text(buf, preview_row, preview_col,
-                           f"\x1b[1;93m{'─── ROBOTS ':─<{preview_w}}\x1b[0m")
+                           f"\x1b[1;93m{rob_title[:preview_w]}\x1b[0m")
                 preview_row += 1
                 bar_w = min(30, preview_w - 20)
 

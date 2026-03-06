@@ -446,6 +446,14 @@ class AsyncCollectionRuntime:
             started_at = episode._started_at  # noqa: SLF001
         return max(0.0, time.monotonic() - started_at)
 
+    @property
+    def video_codec(self) -> str:
+        return self._video_codec
+
+    @property
+    def depth_codec(self) -> str:
+        return self._depth_codec
+
     def open(self) -> None:
         if self._opened:
             return

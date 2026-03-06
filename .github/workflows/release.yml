@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m pip install -e .[test]
+
+      - name: Run non-hardware tests
+        run: python -m pytest -m "not hardware"
+
+      - name: Build package artifacts
+        run: python -m build
+
+      - name: Compute release metadata
+        id: release_meta
+        run: |
+          version="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text())
+          print(data["project"]["version"])
+          PY
+          )"
+          tag="v${version}-build.${GITHUB_RUN_NUMBER}"
+          last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -n "$last_tag" ]; then
+            changelog="$(git log "${last_tag}..HEAD" --pretty=format:'- %s (%h)')"
+          else
+            changelog="$(git log HEAD --pretty=format:'- %s (%h)')"
+          fi
+          if [ -z "$changelog" ]; then
+            changelog="- No changes since the previous release."
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "last_tag=$last_tag"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Rollio ${version}"
+            echo
+            if [ -n "$last_tag" ]; then
+              echo "Changes since ${last_tag}:"
+            else
+              echo "Changes in this release:"
+            fi
+            echo
+            echo "$changelog"
+          } > RELEASE_NOTES.md
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag }}
+          name: Rollio ${{ steps.release_meta.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: dist/*
