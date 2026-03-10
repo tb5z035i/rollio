@@ -262,8 +262,10 @@ def render_frame(bgr: np.ndarray, w: int, h: int,
     Returns raw bytes ready for ``sys.stdout.buffer.write()``.
     """
     import cv2
+    # Resize before colour conversion so the hot preview loop does not
+    # allocate a full-resolution RGB buffer every frame.
+    bgr = cv2.resize(bgr, (w, h * 2), interpolation=cv2.INTER_AREA)
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    rgb = cv2.resize(rgb, (w, h * 2), interpolation=cv2.INTER_AREA)
     builder = _BUILDERS.get(mode)
     if builder is None:
         raise ValueError(
