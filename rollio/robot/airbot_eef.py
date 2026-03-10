@@ -26,7 +26,7 @@ from rollio.robot.base import (
     RobotInfo,
     TargetTrackingCommand,
 )
-from rollio.robot.can_utils import query_airbot_end_effector, set_airbot_led
+from rollio.robot.airbot.can import query_airbot_end_effector, set_airbot_led
 from rollio.robot.scanner import DetectedRobot
 from rollio.utils.time import monotonic_sec
 
@@ -585,7 +585,7 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
     """AIRBOT G2 gripper exposed as a 1-DOF PVT robot."""
 
     ROBOT_TYPE = "airbot_g2"
-    DEFAULT_PVT_VELOCITY = 25.0
+    DEFAULT_PVT_VELOCITY = 100.0
     PVT_CURRENT_THRESHOLD = 10.0
     IDENTIFY_OSCILLATION_MIN = 0.0
     IDENTIFY_OSCILLATION_MAX = 0.07

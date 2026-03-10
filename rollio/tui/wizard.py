@@ -346,7 +346,7 @@ def _run_with_loading(
 
 def _format_joint_preview(dtype: str, value: float) -> tuple[str, float]:
     if dtype in {"airbot_e2b", "airbot_g2"}:
-        frac = float(np.clip(value / 0.10, 0.0, 1.0))
+        frac = float(np.clip(value / 0.07, 0.0, 1.0))
         return f"{value * 1000.0:6.1f}mm", frac
     frac = float(np.clip((value + 2.0) / 4.0, 0.0, 1.0))
     return f"{value:+6.2f}", frac

@@ -729,7 +729,7 @@ class TestAIRBOTEEFMocked:
         mock_eef.pvt.assert_called_once()
         payload = mock_eef.pvt.call_args[0][0]
         assert payload.pos == [0.06]
-        assert payload.vel == [25.0]
+        assert payload.vel == [100.0]
         assert payload.eff == [0.0]
         assert payload.mit_kp == [0.0]
         assert payload.mit_kd == [0.0]
@@ -823,7 +823,7 @@ class TestAIRBOTEEFMocked:
 
         assert payload is not None
         assert payload.pos == [0.035]
-        assert payload.vel == [25.0]
+        assert payload.vel == [100.0]
         assert payload.eff == [0.0]
         assert payload.mit_kp == [0.0]
         assert payload.mit_kd == [0.0]
@@ -853,7 +853,7 @@ class TestAIRBOTEEFMocked:
         mock_eef.set_param.assert_any_call("control_mode", "PVT")
         payload = mock_eef.pvt.call_args[0][0]
         assert 0.0 <= payload.pos[0] <= 0.07
-        assert payload.vel == [25.0]
+        assert payload.vel == [100.0]
         assert payload.mit_kp == [0.0]
         assert payload.mit_kd == [0.0]
         assert payload.eff == [0.0]

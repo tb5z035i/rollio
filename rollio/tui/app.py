@@ -21,6 +21,9 @@ from rollio.tui.renderer import (
 # ── Synchronised output ───────────────────────────────────────────────
 _SYNC_S = b"\x1b[?2026h"
 _SYNC_E = b"\x1b[?2026l"
+_ENTER_KEYS = frozenset({"\n", "\r"})
+_BACKSPACE_KEYS = frozenset({"\x7f", "\x08"})
+_AIRBOT_EEF_DISPLAY_MAX_M = 0.07
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -76,6 +79,45 @@ def _pad_ansi(text: str, width: int) -> str:
     return text + " " * max(0, width - visible)
 
 
+def _key_label(binding: str) -> str:
+    normalized = str(binding).strip().lower()
+    if binding == " " or normalized in {"space", "spacebar"}:
+        return "SPACE"
+    if binding in _ENTER_KEYS or normalized in {"enter", "return"}:
+        return "ENTER"
+    if binding in _BACKSPACE_KEYS or normalized in {"backspace", "bs"}:
+        return "BACKSPACE"
+    return str(binding)
+
+
+def _matches_key_binding(key: str | None, binding: str) -> bool:
+    if key is None:
+        return False
+    normalized = str(binding).strip().lower()
+    if binding == " " or normalized in {"space", "spacebar"}:
+        return key == " "
+    if binding in _ENTER_KEYS or normalized in {"enter", "return"}:
+        return key in _ENTER_KEYS
+    if binding in _BACKSPACE_KEYS or normalized in {"backspace", "bs"}:
+        return key in _BACKSPACE_KEYS
+    return key == binding
+
+
+def _review_shortcut_label(primary: str, configured: str) -> str:
+    configured_label = _key_label(configured)
+    if configured_label == primary:
+        return primary
+    return f"{primary}/{configured_label}"
+
+
+def _matches_keep_review(key: str | None, configured: str) -> bool:
+    return key in _ENTER_KEYS or _matches_key_binding(key, configured)
+
+
+def _matches_discard_review(key: str | None, configured: str) -> bool:
+    return key in _BACKSPACE_KEYS or _matches_key_binding(key, configured)
+
+
 def _write_lines(
     out: bytearray,
     *,
@@ -95,6 +137,7 @@ def _write_lines(
 
 def _robot_panel_lines(
     states: dict[str, dict[str, np.ndarray] | None],
+    robot_types: dict[str, str],
     panel_w: int,
     panel_h: int,
 ) -> list[str]:
@@ -108,19 +151,26 @@ def _robot_panel_lines(
             lines.append("  (no data)")
             continue
         pos = st.get("position")
-        vel = st.get("velocity")
         if pos is not None:
+            robot_type = robot_types.get(name, "")
             for j, p in enumerate(pos):
-                v = vel[j] if vel is not None and j < len(vel) else 0.0
-                # Colour bar for position  (-2..+2 range → bar)
-                bar_len = int(np.clip((p + 2) / 4, 0, 1) * (panel_w - 18))
+                value_text, frac = _format_joint_preview(robot_type, float(p))
+                bar_len = int(frac * max(panel_w - 18, 0))
                 bar = "█" * max(bar_len, 0) + "░" * max(panel_w - 18 - bar_len, 0)
                 lines.append(
-                    f"  j{j} \x1b[36m{p:+6.2f}\x1b[0m "
+                    f"  j{j} \x1b[36m{value_text}\x1b[0m "
                     f"\x1b[33m{bar}\x1b[0m")
         lines.append("")
 
     return (lines + [""] * panel_h)[:panel_h]
+
+
+def _format_joint_preview(robot_type: str, value: float) -> tuple[str, float]:
+    if robot_type in {"airbot_e2b", "airbot_g2"}:
+        frac = float(np.clip(value / _AIRBOT_EEF_DISPLAY_MAX_M, 0.0, 1.0))
+        return f"{value * 1000.0:6.1f}mm", frac
+    frac = float(np.clip((value + 2.0) / 4.0, 0.0, 1.0))
+    return f"{value:+6.2f}", frac
 
 
 def _help_panel_lines(
@@ -130,7 +180,9 @@ def _help_panel_lines(
     panel_h: int,
 ) -> list[str]:
     """Render the fixed help panel shown on the right side."""
-    start_key = "SPACE" if cfg.controls.start_stop == " " else cfg.controls.start_stop
+    start_key = _key_label(cfg.controls.start_stop)
+    keep_key = _review_shortcut_label("ENTER", cfg.controls.keep)
+    discard_key = _review_shortcut_label("BACKSPACE", cfg.controls.discard)
     lines = [
         f"\x1b[1;96m{' HELP ':─<{max(panel_w - 1, 1)}}\x1b[0m",
         f"\x1b[1mMode:\x1b[0m {cfg.mode}",
@@ -139,8 +191,8 @@ def _help_panel_lines(
         "",
         "\x1b[1mKeys\x1b[0m",
         f"  {start_key:<8} start / stop",
-        f"  {cfg.controls.keep:<8} keep reviewed",
-        f"  {cfg.controls.discard:<8} discard reviewed",
+        f"  {keep_key:<8} keep reviewed",
+        f"  {discard_key:<8} discard reviewed",
         "  m        render mode",
         "  q        quit",
         "",
@@ -195,15 +247,18 @@ def _status_lines(
 def run_collection(cfg: RollioConfig) -> None:
     """Run the data collection TUI."""
     runtime = AsyncCollectionRuntime.from_config(cfg)
+    robot_types = {robot.name: robot.type for robot in cfg.robots}
+    runtime_opened = False
 
     episodes_kept = 0
     pending_episode: RecordedEpisode | None = None
     mode_idx = 1   # start at "16" (lower bandwidth)
     _t_prev_frame = time.monotonic()
     actual_fps = 0.0
-    runtime.open()
 
     try:
+        runtime.open()
+        runtime_opened = True
         with _Term() as term:
             out = sys.stdout.buffer
             target_dt = 1.0 / max(cfg.fps, 1)
@@ -221,16 +276,22 @@ def run_collection(cfg: RollioConfig) -> None:
                     break
                 elif key == "m":
                     mode_idx = (mode_idx + 1) % len(RENDER_MODES)
-                elif key == cfg.controls.start_stop:
+                elif _matches_key_binding(key, cfg.controls.start_stop):
                     if runtime.recording:
                         pending_episode = runtime.stop_episode()
                     else:
                         runtime.start_episode()
-                elif key == cfg.controls.keep and pending_episode is not None:
+                elif pending_episode is not None and _matches_keep_review(
+                    key,
+                    cfg.controls.keep,
+                ):
                     runtime.keep_episode(pending_episode)
                     episodes_kept += 1
                     pending_episode = None
-                elif key == cfg.controls.discard and pending_episode is not None:
+                elif pending_episode is not None and _matches_discard_review(
+                    key,
+                    cfg.controls.discard,
+                ):
                     runtime.discard_episode(pending_episode)
                     pending_episode = None
 
@@ -251,7 +312,11 @@ def run_collection(cfg: RollioConfig) -> None:
 
                 # ── Compose frame ────────────────────────────────
                 cam_names = list(latest_frames.keys())
-                robot_lines = _robot_panel_lines(robot_display, left_w, robot_h) if robot_h else []
+                robot_lines = (
+                    _robot_panel_lines(robot_display, robot_types, left_w, robot_h)
+                    if robot_h
+                    else []
+                )
                 help_lines = _help_panel_lines(cfg, runtime, help_w, body_h)
                 status_line_1, status_line_2 = _status_lines(
                     runtime,
@@ -276,18 +341,43 @@ def run_collection(cfg: RollioConfig) -> None:
 
                 # Camera(s) on the left side — aspect preserved
                 if cam_names:
-                    cam_h_each = max(2, cam_h // max(len(cam_names), 1))
+                    cam_count = len(cam_names)
                     cam_row = 1
-                    for cn in cam_names:
+                    for idx, cn in enumerate(cam_names):
+                        remaining = max(cam_h - (cam_row - 1), 1)
+                        remaining_cams = cam_count - idx
+                        cam_h_each = max(1, remaining // max(remaining_cams, 1))
+                        dedicated_label_row = cam_h_each > 1
+                        preview_h = max(1, cam_h_each - 1) if dedicated_label_row else 1
                         frame = latest_frames.get(cn)
                         if frame is not None:
                             fh, fw = frame.shape[:2]
                             rw, rh = calc_render_size(
-                                fw, fh, left_w, cam_h_each)
+                                fw, fh, left_w, preview_h)
                             rendered = render_frame(
                                 frame, rw, rh, render_mode)
                             frame_out.extend(
                                 blit_frame(rendered, cam_row, 1))
+                        else:
+                            _write_lines(
+                                frame_out,
+                                row=cam_row,
+                                col=1,
+                                width=left_w,
+                                height=preview_h,
+                                lines=["\x1b[90m(no preview)\x1b[0m"],
+                            )
+                        label_row = cam_row + preview_h - 1
+                        if dedicated_label_row:
+                            label_row += 1
+                        _write_lines(
+                            frame_out,
+                            row=label_row,
+                            col=1,
+                            width=left_w,
+                            height=1,
+                            lines=[f"\x1b[1;96m[{idx + 1}] {cn}\x1b[0m"],
+                        )
                         cam_row += cam_h_each
                 else:
                     _write_lines(
@@ -339,4 +429,9 @@ def run_collection(cfg: RollioConfig) -> None:
                 if dt < target_dt:
                     time.sleep(target_dt - dt)
     finally:
-        runtime.close()
+        if runtime_opened:
+            try:
+                print("Returning robots to zero...", flush=True)
+                runtime.return_robots_to_zero(timeout=5.0)
+            finally:
+                runtime.close()

@@ -92,6 +92,13 @@ def test_airbot_led_block_defaults_to_4hz_cycle(monkeypatch) -> None:
     assert "\x1b[48;5;208m" in wizard._airbot_led_block(width=8)
 
 
+def test_format_joint_preview_uses_70mm_range_for_airbot_eefs() -> None:
+    text, frac = wizard._format_joint_preview("airbot_e2b", 0.035)
+
+    assert text.strip() == "35.0mm"
+    assert frac == 0.5
+
+
 def test_screen_settings_warns_before_codecs_when_teleop_has_no_robots(
     monkeypatch,
 ) -> None:
@@ -353,7 +360,7 @@ def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:
             return _State()
 
         def latest_command_debug(self) -> tuple[str, str]:
-            return ("PVT", "pos=[ 0.0350] vel=[25.0000] current_threshold=[10.0000]")
+            return ("PVT", "pos=[ 0.0350] vel=[100.0000] current_threshold=[10.0000]")
 
         def identify_stop(self) -> bool:
             self.identify_stopped += 1

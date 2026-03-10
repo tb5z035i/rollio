@@ -1,6 +1,8 @@
 """Asynchronous collection runtime built on top of existing device interfaces."""
 from __future__ import annotations
 
+import multiprocessing as mp
+import os
 import queue
 import threading
 import time
@@ -166,8 +168,71 @@ class EpisodeAccumulator:
         )
 
 
+@dataclass(frozen=True)
+class _ExportWorkerConfig:
+    root: str
+    project_name: str
+    fps: int
+    camera_configs: dict[str, dict[str, object]]
+    video_codec: str
+    depth_codec: str
+    export_delay_sec: float = 0.0
+
+
+def _export_worker_main(
+    config: _ExportWorkerConfig,
+    request_queue: object,
+    result_queue: object,
+) -> None:
+    try:
+        try:
+            os.nice(10)
+        except Exception:
+            pass
+        writer = LeRobotV21Writer(
+            root=config.root,
+            project_name=config.project_name,
+            fps=config.fps,
+            camera_configs={
+                name: CameraConfig.model_validate(payload)
+                for name, payload in config.camera_configs.items()
+            },
+            video_codec=config.video_codec,
+            depth_codec=config.depth_codec,
+        )
+    except Exception as exc:
+        result_queue.put(("fatal", -1, time.monotonic(), None, str(exc)))
+        result_queue.put(None)
+        return
+
+    try:
+        while True:
+            item = request_queue.get()
+            if item is None:
+                request_queue.task_done()
+                return
+            episode_index = -1
+            try:
+                episode_index, episode = item
+                result_queue.put(("started", episode_index, time.monotonic(), None, None))
+                if config.export_delay_sec:
+                    time.sleep(config.export_delay_sec)
+                output_path = writer.write(episode.data)
+                result_queue.put(
+                    ("finished", episode_index, time.monotonic(), str(output_path), None),
+                )
+            except Exception as exc:  # pragma: no cover - surfaced in tests
+                result_queue.put(
+                    ("finished", episode_index, time.monotonic(), None, str(exc)),
+                )
+            finally:
+                request_queue.task_done()
+    finally:
+        result_queue.put(None)
+
+
 class AsyncEpisodeExporter:
-    """Background exporter using blocking queues instead of busy waiting."""
+    """Background exporter isolated in a dedicated worker process."""
 
     def __init__(
         self,
@@ -183,81 +248,165 @@ class AsyncEpisodeExporter:
     ) -> None:
         if lerobot_version != "v2.1":
             raise NotImplementedError("Only LeRobot v2.1 export is implemented")
-        self._writer = LeRobotV21Writer(
-            root=root,
+        self._ctx = mp.get_context("spawn")
+        self._worker_config = _ExportWorkerConfig(
+            root=str(root),
             project_name=project_name,
             fps=fps,
-            camera_configs=camera_configs,
+            camera_configs={
+                name: config.model_dump(mode="python")
+                for name, config in camera_configs.items()
+            },
             video_codec=video_codec,
             depth_codec=depth_codec,
+            export_delay_sec=max(0.0, export_delay_sec),
         )
-        self._queue: queue.Queue[
-            tuple[RecordedEpisode | None, ExportRecord | None]
-        ] = queue.Queue(maxsize=max(1, queue_size))
+        self._queue_size = max(1, queue_size)
         self._records: dict[int, ExportRecord] = {}
-        self._export_delay_sec = max(0.0, export_delay_sec)
-        self._thread: threading.Thread | None = None
+        self._records_lock = threading.Lock()
+        self._request_queue: object | None = None
+        self._result_queue: object | None = None
+        self._process: mp.Process | None = None
+        self._monitor_thread: threading.Thread | None = None
         self._started = False
 
     def start(self) -> None:
         if self._started:
             return
-        self._thread = threading.Thread(
-            target=self._run,
+        self._request_queue = self._ctx.JoinableQueue(maxsize=self._queue_size)
+        self._result_queue = self._ctx.Queue()
+        self._process = self._ctx.Process(
+            target=_export_worker_main,
+            args=(self._worker_config, self._request_queue, self._result_queue),
             name="rollio-exporter",
+        )
+        self._process.start()
+        self._monitor_thread = threading.Thread(
+            target=self._monitor_results,
+            name="rollio-export-monitor",
             daemon=True,
         )
-        self._thread.start()
+        self._monitor_thread.start()
         self._started = True
 
     def submit(self, episode: RecordedEpisode) -> ExportRecord:
+        if not self._started or self._request_queue is None:
+            raise RuntimeError("Export worker is not running")
+        if self._process is not None and not self._process.is_alive():
+            raise RuntimeError("Export worker stopped unexpectedly")
         record = ExportRecord(
             episode_index=episode.data.episode_index,
             submitted_at=time.monotonic(),
         )
-        self._records[record.episode_index] = record
-        self._queue.put((episode, record))
+        with self._records_lock:
+            self._records[record.episode_index] = record
+        self._request_queue.put((record.episode_index, episode))
         return record
 
     def wait_for_episode(self, episode_index: int, timeout: float | None = None) -> bool:
-        record = self._records.get(episode_index)
+        with self._records_lock:
+            record = self._records.get(episode_index)
         if record is None:
             return False
         return record.done_event.wait(timeout)
 
     def join(self) -> None:
-        self._queue.join()
+        while True:
+            with self._records_lock:
+                pending = [
+                    record
+                    for record in self._records.values()
+                    if not record.done_event.is_set()
+                ]
+            if not pending:
+                return
+            if self._process is not None and not self._process.is_alive():
+                self._mark_unfinished_records_failed(
+                    "Export worker exited unexpectedly",
+                )
+                return
+            pending[0].done_event.wait(0.1)
 
     def shutdown(self) -> None:
         if not self._started:
             return
-        self._queue.put((None, None))
-        if self._thread is not None:
-            self._thread.join(timeout=30.0)
-        self._thread = None
+        self.join()
+        if self._request_queue is not None:
+            self._request_queue.put(None)
+        if self._process is not None:
+            self._process.join(timeout=30.0)
+            if self._process.is_alive():
+                self._process.terminate()
+                self._process.join(timeout=5.0)
+        if self._monitor_thread is not None:
+            self._monitor_thread.join(timeout=5.0)
+        if self._request_queue is not None:
+            self._request_queue.close()
+            self._request_queue.join_thread()
+        if self._result_queue is not None:
+            self._result_queue.close()
+            self._result_queue.join_thread()
+        self._request_queue = None
+        self._result_queue = None
+        self._process = None
+        self._monitor_thread = None
         self._started = False
 
     def records(self) -> dict[int, ExportRecord]:
-        return dict(self._records)
+        with self._records_lock:
+            return dict(self._records)
 
-    def _run(self) -> None:
+    def _monitor_results(self) -> None:
         while True:
-            episode, record = self._queue.get()
+            if self._result_queue is None:
+                return
             try:
-                if episode is None or record is None:
+                result = self._result_queue.get(timeout=0.1)
+            except queue.Empty:
+                if self._process is not None and not self._process.is_alive():
+                    self._mark_unfinished_records_failed(
+                        "Export worker exited unexpectedly",
+                    )
                     return
-                record.started_at = time.monotonic()
-                if self._export_delay_sec:
-                    time.sleep(self._export_delay_sec)
-                record.output_path = self._writer.write(episode.data)
-                record.finished_at = time.monotonic()
-            except Exception as exc:  # pragma: no cover - surfaced in tests
-                record.error = str(exc)
-                record.finished_at = time.monotonic()
-            finally:
-                if record is not None:
-                    record.done_event.set()
-                self._queue.task_done()
+                continue
+            if result is None:
+                return
+            kind, episode_index, timestamp, output_path, error = result
+            if kind == "fatal":
+                self._mark_unfinished_records_failed(error or "Export worker failed to start")
+                continue
+            record = self._record_for_episode(int(episode_index))
+            if record is None:
+                continue
+            if kind == "started":
+                record.started_at = float(timestamp)
+                continue
+            if kind == "finished":
+                if record.started_at is None:
+                    record.started_at = float(timestamp)
+                record.finished_at = float(timestamp)
+                record.output_path = Path(output_path) if output_path else None
+                record.error = error
+                record.done_event.set()
+
+    def _record_for_episode(self, episode_index: int) -> ExportRecord | None:
+        with self._records_lock:
+            return self._records.get(episode_index)
+
+    def _mark_unfinished_records_failed(self, error: str) -> None:
+        finished_at = time.monotonic()
+        with self._records_lock:
+            pending = [
+                record
+                for record in self._records.values()
+                if not record.done_event.is_set()
+            ]
+        for record in pending:
+            if record.started_at is None:
+                record.started_at = finished_at
+            record.finished_at = finished_at
+            record.error = error
+            record.done_event.set()
 
 
 def _joint_state_to_robot_state(robot: RobotArm, joint_state: JointState) -> dict[str, np.ndarray]:

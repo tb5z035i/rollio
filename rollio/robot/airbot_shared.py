@@ -1,12 +1,8 @@
 """Shared AIRBOT helpers for discovery and SDK imports."""
 from __future__ import annotations
 
-from rollio.robot.can_utils import (
-    is_can_interface_up,
-    probe_airbot_device,
-    query_airbot_properties,
-    scan_can_interfaces,
-)
+from rollio.robot.airbot.can import probe_airbot_device, query_airbot_properties
+from rollio.robot.can_utils import is_can_interface_up, scan_can_interfaces
 from rollio.robot.scanner import DetectedRobot
 
 _ah = None

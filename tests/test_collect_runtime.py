@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -492,6 +493,22 @@ def test_async_runtime_exports_in_background(tmp_path: Path) -> None:
         assert final_pose_error < 0.35
     finally:
         driver_stop.set()
+        runtime.close()
+
+
+def test_async_runtime_exports_from_separate_process(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path, export_delay_sec=0.2)
+    try:
+        runtime.open()
+
+        exporter = runtime._exporter  # noqa: SLF001
+
+        assert exporter._process is not None  # noqa: SLF001
+        assert exporter._process.pid is not None  # noqa: SLF001
+        assert exporter._process.pid != os.getpid()  # noqa: SLF001
+        assert exporter._monitor_thread is not None  # noqa: SLF001
+        assert exporter._monitor_thread.is_alive() is True  # noqa: SLF001
+    finally:
         runtime.close()
 
 
