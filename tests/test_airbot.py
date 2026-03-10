@@ -672,8 +672,8 @@ class TestAIRBOTScanning:
         assert mock_probe.call_count == 2
         # Verify properties were queried for each device
         assert mock_query_props.call_count == 2
-        # Verify SN is included in label
-        assert "SN:" in devices[0].label
+        # Verify full SN is included in label
+        assert "SN:PZ25C0240200" in devices[0].label
     
     @patch('rollio.robot.airbot_play.probe_airbot_device', return_value=False)
     @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)

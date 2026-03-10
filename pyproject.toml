@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 gpu = ["cupy-cuda13x>=13.0"]
 realsense = ["pyrealsense2"]
-airbot = ["pin", "airbot_hardware_py", "python-can>=4.0"]
+airbot = ["pin", "python-can>=4.0"]
 completion = ["argcomplete>=3.0"]
 test = ["pytest>=7.0", "pytest-cov>=4.0"]
 all = ["argcomplete>=3.0"]

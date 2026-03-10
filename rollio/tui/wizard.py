@@ -197,6 +197,55 @@ def _draw_text(out, row: int, col: int, text: str):
     out.write(f"\x1b[{row};{col}H{text}\x1b[0m".encode())
 
 
+def _wait_for_keypress(term: _Term) -> str:
+    """Block until a single key is pressed."""
+    while True:
+        key = term.read_key_blocking(0.05)
+        if key is not None:
+            return key
+
+
+def _teleop_warning_lines(robots: list[RobotConfig]) -> list[str] | None:
+    """Return warning text when tele-operation prerequisites are not met."""
+    leaders = [robot for robot in robots if robot.role == "leader"]
+    followers = [robot for robot in robots if robot.role == "follower"]
+    if leaders and followers:
+        return None
+    if not robots:
+        return [
+            "\x1b[91mTele-operation requires at least one leader and one follower robot.\x1b[0m",
+            "No robots were configured in the previous step.",
+        ]
+    return [
+        "\x1b[91mTele-operation requires at least one leader and one follower robot.\x1b[0m",
+        f"Configured robots: {len(leaders)} leader(s), {len(followers)} follower(s).",
+    ]
+
+
+def _show_warning_screen(
+    term: _Term,
+    out,
+    *,
+    title: str,
+    lines: list[str],
+    prompt: str,
+    step: int,
+    total_steps: int,
+) -> None:
+    """Render a blocking warning page."""
+    W = term.cols
+    out.write(_SY_S + b"\x1b[2J")
+    _draw_header(out, W, step, total_steps, title)
+    row = 4
+    for line in lines:
+        _draw_text(out, row, 2, line)
+        row += 1
+    _draw_text(out, row + 1, 2, prompt)
+    out.write(_SY_E)
+    out.flush()
+    _wait_for_keypress(term)
+
+
 def _prompt_line(term: _Term, out, row: int, col: int,
                  prompt: str, default: str = "") -> str | None:
     """Inline text editor. Returns entered string, or None on Escape/q."""
@@ -957,6 +1006,7 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
 def _screen_settings(
     term: _Term,
     out,
+    robots: list[RobotConfig],
     *,
     step: int = 3,
     total_steps: int = 5,
@@ -991,6 +1041,19 @@ def _screen_settings(
     if mode_idx is None:
         return None
     mode = MODE_OPTIONS[mode_idx][0]
+    if mode == "teleop":
+        warning_lines = _teleop_warning_lines(robots)
+        if warning_lines is not None:
+            _show_warning_screen(
+                term,
+                out,
+                title="Tele-op Requirements",
+                lines=warning_lines,
+                prompt="Press any key to cancel setup.",
+                step=step,
+                total_steps=total_steps,
+            )
+            return None
 
     rgb_options = list(available_rgb_codec_options())
     rgb_idx = _pick_option(
@@ -1030,24 +1093,20 @@ def _screen_teleop_pairs(
     total_steps: int = 5,
 ) -> list[TeleopPairConfig] | None:
     """Configure explicit tele-op pairings for leader/follower robots."""
+    warning_lines = _teleop_warning_lines(robots)
+    if warning_lines is not None:
+        _show_warning_screen(
+            term,
+            out,
+            title="Tele-op Pairing",
+            lines=warning_lines,
+            prompt="Press any key to cancel setup.",
+            step=step,
+            total_steps=total_steps,
+        )
+        return None
     leaders = [robot for robot in robots if robot.role == "leader"]
     followers = [robot for robot in robots if robot.role == "follower"]
-
-    if not leaders or not followers:
-        W = term.cols
-        out.write(_SY_S + b"\x1b[2J")
-        _draw_header(out, W, step, total_steps, "Tele-op Pairing")
-        _draw_text(
-            out,
-            4,
-            2,
-            "\x1b[91mTele-operation requires at least one leader and one follower robot.\x1b[0m",
-        )
-        _draw_text(out, 6, 2, "Press any key to cancel setup.")
-        out.write(_SY_E)
-        out.flush()
-        term.read_key_blocking()
-        return None
 
     suggested = suggest_teleop_pairs(robots)
     pairs: list[TeleopPairConfig] = []
@@ -1625,7 +1684,13 @@ def run_wizard(
         rob_configs = _screen_robots(term, out, rob_devs, total_steps=total_steps)
 
         # Step 3: Project/settings
-        settings = _screen_settings(term, out, step=3, total_steps=total_steps)
+        settings = _screen_settings(
+            term,
+            out,
+            rob_configs,
+            step=3,
+            total_steps=total_steps,
+        )
         if settings is None:
             return None
         project_name, storage_root, mode, video_codec, depth_codec = settings

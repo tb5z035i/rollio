@@ -197,7 +197,7 @@ class AIRBOTPlay(RobotArm):
                     sn = props.get("serial_number", "")
                     label = f"AIRBOT Play ({iface})"
                     if sn:
-                        label = f"AIRBOT Play ({iface}) SN:{sn[-8:]}"
+                        label = f"AIRBOT Play ({iface}) SN:{sn}"
                     
                     found.append(DetectedRobot(
                         robot_type=cls.ROBOT_TYPE,
