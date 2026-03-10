@@ -23,7 +23,11 @@ def _cmd_setup(args: argparse.Namespace) -> None:
         print("Use --force to overwrite, or choose a different -o path.")
         sys.exit(1)
 
-    cfg = run_wizard(str(out_path))
+    cfg = run_wizard(
+        str(out_path),
+        simulated_cameras=max(0, args.sim_cameras),
+        simulated_arms=max(0, args.sim_arms),
+    )
 
     if cfg is None:
         print("Setup cancelled.")
@@ -241,6 +245,12 @@ def main() -> None:
     p_setup.add_argument(
         "-f", "--force", action="store_true",
         help="Overwrite existing config")
+    p_setup.add_argument(
+        "--sim-cameras", type=int, default=0,
+        help="Number of simulated cameras to show during setup (default: 0)")
+    p_setup.add_argument(
+        "--sim-arms", type=int, default=0,
+        help="Number of simulated robot arms to show during setup (default: 0)")
 
     # ── collect ───────────────────────────────────────────────────
     p_collect = sub.add_parser("collect", help="Run data collection TUI")

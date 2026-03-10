@@ -6,13 +6,14 @@
 # ║                                                                      ║
 # ║  Or generate one interactively:                                      ║
 # ║    rollio setup -o <your_config>.yaml                                ║
+# ║    rollio setup --sim-cameras 2 --sim-arms 2 -o test.yaml           ║
 # ╚═══════════════════════════════════════════════════════════════════════╝
 
 # ── Project ───────────────────────────────────────────────────────────────
 # project_name: Subdirectory name under storage.root.
 # description:  Free text — describe the task being recorded.
 # fps:          Global sampling rate for episode recording (Hz).
-# mode:         "teleop" (leader/follower) or "intervention" (external cmd).
+# mode:         "teleop" (leader/follower) or "intervention" (human intervention).
 
 project_name: default
 description: ""
@@ -39,7 +40,7 @@ mode: teleop
 #   channel:      (realsense only) "color" | "depth" | "infrared".
 #   channels:     Reserved for multi-channel mode. Leave as [].
 
-cameras:
+cameras: []
   # --- Example: USB webcam via V4L2 ---
   # - name: wrist_cam
   #   type: v4l2
@@ -88,17 +89,17 @@ cameras:
   #   channel: infrared
   #   channels: []
 
-  # --- Fallback: pseudo camera (for testing) ---
-  - name: cam_0
-    type: pseudo
-    device: 0
-    width: 640
-    height: 480
-    fps: 30
-    pixel_format: rgb24
-    id_path: ""
-    channel: color
-    channels: []
+  # --- Simulated camera example (for testing) ---
+  # - name: cam_0
+  #   type: pseudo
+  #   device: 0
+  #   width: 640
+  #   height: 480
+  #   fps: 30
+  #   pixel_format: rgb24
+  #   id_path: ""
+  #   channel: color
+  #   channels: []
 
 # ── Robots ────────────────────────────────────────────────────────────────
 # Each entry is one proprioception channel recorded per episode.
@@ -112,7 +113,7 @@ cameras:
 #                 airbot_play: CAN interface name (e.g. "can0").
 #                 pseudo/nero: ignored.
 
-robots:
+robots: []
   # --- Example: AIRBOT Play single-arm tele-op ---
   # - name: follower_arm
   #   type: airbot_play
@@ -151,12 +152,25 @@ robots:
   #   num_joints: 6
   #   device: can3
 
-  # --- Fallback: pseudo robot (for testing) ---
-  - name: arm_0
-    type: pseudo
-    role: follower
-    num_joints: 6
-    device: ""
+  # --- Simulated robot example (for testing) ---
+  # - name: arm_0
+  #   type: pseudo
+  #   role: follower
+  #   num_joints: 6
+  #   device: ""
+
+# ── Tele-op pairs ────────────────────────────────────────────────────────────
+# Explicit leader/follower relationships for tele-operation mode.
+# Each pair can independently choose:
+#   mapper: "joint_direct" | "pose_fk_ik"
+#
+# Leave this empty when using intervention mode.
+
+teleop_pairs: []
+  # - name: pair_0
+  #   leader: left_leader
+  #   follower: left_follower
+  #   mapper: joint_direct
 
 # ── Storage ───────────────────────────────────────────────────────────────
 # root:            Base directory. Episodes are written to {root}/{project_name}/.
@@ -166,6 +180,16 @@ robots:
 storage:
   root: ~/rollio_data
   lerobot_version: v2.1
+
+# ── Encoder ──────────────────────────────────────────────────────────────────
+# video_codec: codec for RGB/color streams.
+# depth_codec: codec for depth/grayscale streams.
+# background_workers: background export workers.
+
+encoder:
+  video_codec: libx264
+  depth_codec: ffv1
+  background_workers: 1
 
 # ── Controls ──────────────────────────────────────────────────────────────
 # Keyboard shortcuts for the data-collection TUI.
