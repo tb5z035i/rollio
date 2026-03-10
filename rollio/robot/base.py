@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from rollio.defaults import DEFAULT_CONTROL_DT_SEC
+
 if TYPE_CHECKING:
     from rollio.robot.scanner import DetectedRobot
 
@@ -888,7 +890,7 @@ class RobotArm(ABC):
         kd: np.ndarray | float = 2.0,
         tolerance: float = 0.01,
         timeout: float = 10.0,
-        dt: float = 0.004,
+        dt: float = DEFAULT_CONTROL_DT_SEC,
     ) -> bool:
         """Move to target position (blocking).
         
@@ -935,7 +937,7 @@ class RobotArm(ABC):
         self,
         timeout: float = 10.0,
         tolerance: float = 0.01,
-        dt: float = 0.004,
+        dt: float = DEFAULT_CONTROL_DT_SEC,
     ) -> bool:
         """Move the robot to an all-zero joint configuration when supported."""
         return self.move_to_position(

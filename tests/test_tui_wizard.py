@@ -5,6 +5,7 @@ import io
 
 import numpy as np
 
+from rollio.defaults import DEFAULT_CONTROL_HZ, DEFAULT_CONTROL_INTERVAL_MS
 from rollio.config.schema import RobotConfig
 from rollio.episode.codecs import (
     available_depth_codec_options,
@@ -99,6 +100,16 @@ def test_format_joint_preview_uses_70mm_range_for_airbot_eefs() -> None:
     assert frac == 0.5
 
 
+def test_format_control_interval_preview_uses_target_ratio() -> None:
+    text, frac = wizard._format_control_interval_preview(
+        DEFAULT_CONTROL_INTERVAL_MS * 2.0,
+        DEFAULT_CONTROL_INTERVAL_MS,
+    )
+
+    assert text.strip() == f"{DEFAULT_CONTROL_INTERVAL_MS * 2.0:0.1f}ms"
+    assert frac == 0.5
+
+
 def test_screen_settings_warns_before_codecs_when_teleop_has_no_robots(
     monkeypatch,
 ) -> None:
@@ -182,8 +193,8 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
             self.close_called = False
             self.return_zero_called = False
             self.scheduler_driver = "asyncio"
-            self.telemetry_hz = 250
-            self.control_hz = 250
+            self.telemetry_hz = DEFAULT_CONTROL_HZ
+            self.control_hz = DEFAULT_CONTROL_HZ
 
         def open(self) -> None:
             self.open_called = True
@@ -334,6 +345,65 @@ def test_screen_robots_persists_airbot_e2b_as_separate_entity(monkeypatch) -> No
     ]
 
 
+def test_screen_robots_shows_airbot_play_joint_positions(monkeypatch) -> None:
+    prompts = iter(["leader_arm", "l"])
+    out = io.BytesIO()
+
+    class _FakeAirbotPlay:
+        def __init__(self) -> None:
+            self._is_open = True
+            self.identify_started = 0
+            self.identify_steps = 0
+            self.identify_stopped = 0
+
+        def identify_start(self, with_gravity_comp: bool = True) -> bool:
+            assert with_gravity_comp is True
+            self.identify_started += 1
+            return True
+
+        def identify_step(self) -> None:
+            self.identify_steps += 1
+
+        def read_joint_state(self):
+            class _State:
+                is_valid = True
+                position = np.array([0.12, -0.34], dtype=np.float32)
+
+            return _State()
+
+        def identify_stop(self) -> bool:
+            self.identify_stopped += 1
+            return True
+
+    fake_robot = _FakeAirbotPlay()
+    monkeypatch.setattr(wizard, "_prompt_line", lambda *args, **kwargs: next(prompts))
+    monkeypatch.setattr(wizard, "_get_airbot_robot", lambda *args, **kwargs: fake_robot)
+    monkeypatch.setattr(wizard.time, "sleep", lambda *args, **kwargs: None)
+
+    configs = wizard._screen_robots(
+        _FakeTerm(["\n"]),
+        out,
+        [
+            DetectedDevice(
+                kind="robot",
+                dtype="airbot_play",
+                device_id="can0",
+                label="AIRBOT Play (can0)",
+                properties={"can_interface": "can0", "num_joints": 2},
+            )
+        ],
+    )
+
+    assert configs is not None
+    assert fake_robot.identify_started == 1
+    assert fake_robot.identify_steps >= 1
+    assert fake_robot.identify_stopped == 1
+    rendered = out.getvalue().decode("utf-8", errors="ignore")
+    assert "gravity compensation" in rendered
+    assert "j0" in rendered
+    assert "+0.12" in rendered
+
+
 def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:
     prompts = iter(["gripper_demo", "f"])
     out = io.BytesIO()
@@ -360,7 +430,7 @@ def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:
             return _State()
 
         def latest_command_debug(self) -> tuple[str, str]:
-            return ("PVT", "pos=[ 0.0350] vel=[100.0000] current_threshold=[10.0000]")
+            return ("PVT", "pos=[ 0.0350] vel=[200.0000] current_threshold=[200.0000]")
 
         def identify_stop(self) -> bool:
             self.identify_stopped += 1
@@ -392,7 +462,7 @@ def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:
     rendered = out.getvalue().decode("utf-8", errors="ignore")
     assert "G2 oscillation" in rendered
     assert "Cmd: PVT" in rendered
-    assert "current_threshold=[10.0000]" in rendered
+    assert "current_threshold=[200.0000]" in rendered
 
 
 def test_screen_cameras_sizes_preview_from_actual_frame(monkeypatch) -> None:

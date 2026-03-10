@@ -8,6 +8,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from rollio.defaults import DEFAULT_CONTROL_HZ
 from rollio.episode.codecs import (
     get_depth_codec_option,
     get_rgb_codec_option,
@@ -129,8 +130,8 @@ class UploadConfig(BaseModel):
 
 class AsyncPipelineConfig(BaseModel):
     export_queue_size: int = 4
-    telemetry_hz: int = 250
-    control_hz: int = 250
+    telemetry_hz: int = DEFAULT_CONTROL_HZ
+    control_hz: int = DEFAULT_CONTROL_HZ
     max_pending_episodes: int = 8
     allow_drop_preview_frames: bool = True
 

@@ -28,6 +28,7 @@ from rollio.config.schema import (
     CameraConfig, ControlConfig, RobotConfig, RollioConfig, StorageConfig,
     TeleopPairConfig, EncoderConfig,
 )
+from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.episode.codecs import (
     available_depth_codec_options,
     available_rgb_codec_options,
@@ -350,6 +351,13 @@ def _format_joint_preview(dtype: str, value: float) -> tuple[str, float]:
         return f"{value * 1000.0:6.1f}mm", frac
     frac = float(np.clip((value + 2.0) / 4.0, 0.0, 1.0))
     return f"{value:+6.2f}", frac
+
+
+def _format_control_interval_preview(interval_ms: float, target_interval_ms: float) -> tuple[str, float]:
+    target = max(float(target_interval_ms), 1e-6)
+    observed = max(float(interval_ms), 0.0)
+    frac = float(np.clip(target / max(observed, target), 0.0, 1.0))
+    return f"{observed:5.1f}ms", frac
 
 
 def _airbot_led_block(blink_on: bool | None = None, width: int = 18) -> str:
@@ -1899,43 +1907,43 @@ def _screen_summary(term: _Term, out,
                     try:
                         state = latest_robot_states.get(rc.name, {})
                         pos = state.get("position")
-                        reserved_rows = max(1, rc.num_joints)
+                        state_lines: list[str] = []
                         if pos is None or len(pos) == 0:
+                            state_lines.append("\x1b[90m(no data)\x1b[0m")
+                        else:
+                            for j, p in enumerate(pos):
+                                value_text, frac = _format_joint_preview(rc.type, float(p))
+                                bar_len = int(frac * bar_w)
+                                bar = "█" * bar_len + "░" * (bar_w - bar_len)
+                                state_lines.append(
+                                    f"j{j} \x1b[36m{value_text}\x1b[0m "
+                                    f"\x1b[33m{bar}\x1b[0m"
+                                )
+                        control_interval = state.get("control_loop_interval_ms")
+                        control_target = state.get("control_loop_target_interval_ms")
+                        if control_interval is not None and len(control_interval) > 0:
+                            interval_text, frac = _format_control_interval_preview(
+                                float(control_interval[0]),
+                                float(control_target[0])
+                                if control_target is not None and len(control_target) > 0
+                                else DEFAULT_CONTROL_INTERVAL_MS,
+                            )
+                            bar_len = int(frac * bar_w)
+                            bar = "█" * bar_len + "░" * (bar_w - bar_len)
+                            state_lines.append(
+                                f"ctrl \x1b[36m{interval_text}\x1b[0m "
+                                f"\x1b[33m{bar}\x1b[0m"
+                            )
+                        reserved_rows = max(len(state_lines), max(1, rc.num_joints))
+                        for j in range(reserved_rows):
+                            line = state_lines[j] if j < len(state_lines) else ""
                             _draw_text_clear(
                                 buf,
-                                preview_row + 1,
+                                preview_row + 1 + j,
                                 preview_col + 2,
-                                "\x1b[90m(no data)\x1b[0m",
+                                line,
                                 max(preview_w - 2, 0),
                             )
-                            for j in range(1, reserved_rows):
-                                _draw_text_clear(
-                                    buf,
-                                    preview_row + 1 + j,
-                                    preview_col + 2,
-                                    "",
-                                    max(preview_w - 2, 0),
-                                )
-                        else:
-                            for j in range(reserved_rows):
-                                if j < len(pos):
-                                    p = pos[j]
-                                    value_text, frac = _format_joint_preview(rc.type, float(p))
-                                    bar_len = int(frac * bar_w)
-                                    bar = "█" * bar_len + "░" * (bar_w - bar_len)
-                                    line = (
-                                        f"j{j} \x1b[36m{value_text}\x1b[0m "
-                                        f"\x1b[33m{bar}\x1b[0m"
-                                    )
-                                else:
-                                    line = ""
-                                _draw_text_clear(
-                                    buf,
-                                    preview_row + 1 + j,
-                                    preview_col + 2,
-                                    line,
-                                    max(preview_w - 2, 0),
-                                )
                         preview_row += 1 + reserved_rows + 1
                     except Exception:
                         _draw_text_clear(

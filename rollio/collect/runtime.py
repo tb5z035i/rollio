@@ -13,6 +13,7 @@ import numpy as np
 
 from rollio.config import suggest_teleop_pairs
 from rollio.config.schema import CameraConfig, RollioConfig, TeleopPairConfig
+from rollio.defaults import DEFAULT_CONTROL_HZ
 from rollio.episode.recorder import EpisodeData
 from rollio.episode.writer import LeRobotV21Writer
 from rollio.robot import ControlMode, JointState, RobotArm
@@ -243,6 +244,7 @@ class AsyncEpisodeExporter:
         video_codec: str,
         depth_codec: str,
         queue_size: int = 4,
+        pending_queue_size: int = 8,
         export_delay_sec: float = 0.0,
         lerobot_version: str = "v2.1",
     ) -> None:
@@ -262,17 +264,21 @@ class AsyncEpisodeExporter:
             export_delay_sec=max(0.0, export_delay_sec),
         )
         self._queue_size = max(1, queue_size)
+        self._pending_queue_size = max(1, pending_queue_size)
         self._records: dict[int, ExportRecord] = {}
         self._records_lock = threading.Lock()
+        self._pending_queue: queue.Queue[tuple[int, RecordedEpisode] | None] | None = None
         self._request_queue: object | None = None
         self._result_queue: object | None = None
         self._process: mp.Process | None = None
+        self._submit_thread: threading.Thread | None = None
         self._monitor_thread: threading.Thread | None = None
         self._started = False
 
     def start(self) -> None:
         if self._started:
             return
+        self._pending_queue = queue.Queue(maxsize=self._pending_queue_size)
         self._request_queue = self._ctx.JoinableQueue(maxsize=self._queue_size)
         self._result_queue = self._ctx.Queue()
         self._process = self._ctx.Process(
@@ -287,10 +293,16 @@ class AsyncEpisodeExporter:
             daemon=True,
         )
         self._monitor_thread.start()
+        self._submit_thread = threading.Thread(
+            target=self._submit_pending_requests,
+            name="rollio-export-submit",
+            daemon=True,
+        )
+        self._submit_thread.start()
         self._started = True
 
     def submit(self, episode: RecordedEpisode) -> ExportRecord:
-        if not self._started or self._request_queue is None:
+        if not self._started or self._pending_queue is None:
             raise RuntimeError("Export worker is not running")
         if self._process is not None and not self._process.is_alive():
             raise RuntimeError("Export worker stopped unexpectedly")
@@ -300,7 +312,7 @@ class AsyncEpisodeExporter:
         )
         with self._records_lock:
             self._records[record.episode_index] = record
-        self._request_queue.put((record.episode_index, episode))
+        self._pending_queue.put((record.episode_index, episode))
         return record
 
     def wait_for_episode(self, episode_index: int, timeout: float | None = None) -> bool:
@@ -331,8 +343,10 @@ class AsyncEpisodeExporter:
         if not self._started:
             return
         self.join()
-        if self._request_queue is not None:
-            self._request_queue.put(None)
+        if self._pending_queue is not None:
+            self._pending_queue.put(None)
+        if self._submit_thread is not None:
+            self._submit_thread.join(timeout=5.0)
         if self._process is not None:
             self._process.join(timeout=30.0)
             if self._process.is_alive():
@@ -346,9 +360,11 @@ class AsyncEpisodeExporter:
         if self._result_queue is not None:
             self._result_queue.close()
             self._result_queue.join_thread()
+        self._pending_queue = None
         self._request_queue = None
         self._result_queue = None
         self._process = None
+        self._submit_thread = None
         self._monitor_thread = None
         self._started = False
 
@@ -389,6 +405,34 @@ class AsyncEpisodeExporter:
                 record.error = error
                 record.done_event.set()
 
+    def _submit_pending_requests(self) -> None:
+        while True:
+            if self._pending_queue is None:
+                return
+            item = self._pending_queue.get()
+            try:
+                if item is None:
+                    if self._request_queue is not None:
+                        self._request_queue.put(None)
+                    return
+                episode_index, episode = item
+                if self._request_queue is None:
+                    raise RuntimeError("Export worker request queue is unavailable")
+                if self._process is not None and not self._process.is_alive():
+                    raise RuntimeError("Export worker stopped unexpectedly")
+                self._request_queue.put((episode_index, episode))
+            except Exception as exc:
+                record = self._record_for_episode(int(episode_index))
+                if record is not None:
+                    finished_at = time.monotonic()
+                    if record.started_at is None:
+                        record.started_at = finished_at
+                    record.finished_at = finished_at
+                    record.error = str(exc)
+                    record.done_event.set()
+            finally:
+                self._pending_queue.task_done()
+
     def _record_for_episode(self, episode_index: int) -> ExportRecord | None:
         with self._records_lock:
             return self._records.get(episode_index)
@@ -424,6 +468,27 @@ def _joint_state_to_robot_state(robot: RobotArm, joint_state: JointState) -> dic
         robot_state["velocity"] = joint_state.velocity
     if joint_state.effort is not None:
         robot_state["effort"] = joint_state.effort
+    control_loop_metrics = getattr(robot, "control_loop_metrics", None)
+    if callable(control_loop_metrics):
+        try:
+            metrics = control_loop_metrics()
+        except Exception:
+            metrics = None
+        if metrics is not None:
+            robot_state["control_loop_target_interval_ms"] = np.array(
+                [float(metrics.target_interval_ms)],
+                dtype=np.float32,
+            )
+            if metrics.last_interval_ms is not None:
+                robot_state["control_loop_interval_ms"] = np.array(
+                    [float(metrics.last_interval_ms)],
+                    dtype=np.float32,
+                )
+            if metrics.avg_interval_ms is not None:
+                robot_state["control_loop_avg_interval_ms"] = np.array(
+                    [float(metrics.avg_interval_ms)],
+                    dtype=np.float32,
+                )
     return robot_state
 
 
@@ -583,29 +648,30 @@ class TeleopTask:
         )
 
     def step(self) -> None:
-        # Refresh gravity compensation every control tick so the leader stays
-        # backdrivable while the operator drags it.
+        # AIRBOT backends replay the latest intent in their own device threads,
+        # but we still refresh the newest leader/follower targets here.
         self._pair.leader.step_free_drive()
         command = self._mapper.map_command(
             self._pair.leader,
             self._pair.follower,
             previous_target=self._last_target,
         )
-        self._runtime.update_pair_mode(self._pair.name, command.mode)
         if command.position_target is None or command.velocity_target is None:
+            self._runtime.update_pair_mode(self._pair.name, command.mode)
             return
         self._last_target = command.position_target
-        self._runtime.record_pair_action(
-            self._pair.name,
-            time.monotonic(),
-            command.position_target,
-        )
         self._pair.follower.step_target_tracking(
             position_target=command.position_target,
             velocity_target=command.velocity_target,
             kp=self._pair.kp,
             kd=self._pair.kd,
             add_gravity_compensation=True,
+        )
+        self._runtime.update_pair_mode(self._pair.name, command.mode)
+        self._runtime.record_pair_action(
+            self._pair.name,
+            time.monotonic(),
+            command.position_target,
         )
 
 
@@ -625,8 +691,9 @@ class AsyncCollectionRuntime:
         depth_codec: str,
         lerobot_version: str = "v2.1",
         export_queue_size: int = 4,
-        telemetry_hz: int = 250,
-        control_hz: int = 250,
+        max_pending_episodes: int = 8,
+        telemetry_hz: int = DEFAULT_CONTROL_HZ,
+        control_hz: int = DEFAULT_CONTROL_HZ,
         export_delay_sec: float = 0.0,
         scheduler_driver: str = "asyncio",
         camera_queue_size: int = 4,
@@ -668,6 +735,7 @@ class AsyncCollectionRuntime:
             video_codec=video_codec,
             depth_codec=depth_codec,
             queue_size=export_queue_size,
+            pending_queue_size=max_pending_episodes,
             export_delay_sec=export_delay_sec,
             lerobot_version=lerobot_version,
         )
@@ -699,6 +767,7 @@ class AsyncCollectionRuntime:
             depth_codec=cfg.encoder.depth_codec,
             lerobot_version=cfg.storage.lerobot_version,
             export_queue_size=cfg.async_pipeline.export_queue_size,
+            max_pending_episodes=cfg.async_pipeline.max_pending_episodes,
             telemetry_hz=cfg.async_pipeline.telemetry_hz,
             control_hz=cfg.async_pipeline.control_hz,
             export_delay_sec=export_delay_sec,

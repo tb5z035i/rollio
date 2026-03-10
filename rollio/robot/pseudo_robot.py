@@ -9,6 +9,7 @@ import math
 
 import numpy as np
 
+from rollio.defaults import DEFAULT_CONTROL_HZ
 from rollio.robot.base import (
     ControlMode,
     FeedbackCapability,
@@ -300,7 +301,7 @@ class PseudoRobotArm(RobotArm):
         name: str = "pseudo_arm",
         n_dof: int = 6,
         noise_level: float = 0.001,
-        control_frequency: float = 250.0,
+        control_frequency: float = DEFAULT_CONTROL_HZ,
     ) -> None:
         """Initialize the pseudo robot arm.
         

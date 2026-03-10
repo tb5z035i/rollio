@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from rollio.config.schema import CameraConfig, RobotConfig, RollioConfig
+from rollio.defaults import DEFAULT_CONTROL_HZ
 from rollio.robot import AIRBOTE2B, AIRBOTG2, AIRBOTPlay, RobotArm
 from rollio.robot.pseudo_robot import PseudoRobotArm
 from rollio.sensors import ImageSensor, PseudoCamera, RealSenseCamera, V4L2Camera
@@ -118,7 +119,9 @@ def _build_pseudo_robot(robot_cfg: RobotConfig) -> RobotArm:
         name=robot_cfg.name,
         n_dof=robot_cfg.num_joints,
         noise_level=float(robot_cfg.options.get("noise_level", 0.0)),
-        control_frequency=float(robot_cfg.options.get("control_frequency", 250.0)),
+        control_frequency=float(
+            robot_cfg.options.get("control_frequency", DEFAULT_CONTROL_HZ)
+        ),
     )
 
 

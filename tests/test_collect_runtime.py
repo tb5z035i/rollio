@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import threading
 import time
 from pathlib import Path
@@ -11,7 +12,12 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from rollio.collect import AsyncCollectionRuntime, build_robots_from_config, register_robot_factory
-from rollio.collect.runtime import TeleopPairBinding, build_teleop_pairs_from_config
+from rollio.collect.runtime import (
+    AsyncEpisodeExporter,
+    RecordedEpisode,
+    TeleopPairBinding,
+    build_teleop_pairs_from_config,
+)
 from rollio.config import (
     AsyncPipelineConfig,
     CameraConfig,
@@ -22,6 +28,7 @@ from rollio.config import (
     TeleopPairConfig,
     UploadConfig,
 )
+from rollio.episode.recorder import EpisodeData
 from rollio.robot import (
     ControlMode,
     FeedbackCapability,
@@ -419,6 +426,24 @@ def _first_ee_position(episode, robot_name: str) -> np.ndarray:
     return episode.data.robot_states[robot_name][0][1]["ee_position"]
 
 
+def _make_recorded_episode(index: int = 0) -> RecordedEpisode:
+    episode = EpisodeData(
+        episode_index=index,
+        fps=10,
+        duration=0.1,
+        camera_frames={},
+        robot_states={},
+        pair_actions={},
+        action_layout=[],
+    )
+    return RecordedEpisode(
+        data=episode,
+        started_at=0.0,
+        stopped_at=0.1,
+        mapper_modes={},
+    )
+
+
 def test_async_runtime_exports_in_background(tmp_path: Path) -> None:
     runtime = _build_runtime(tmp_path, export_delay_sec=1.0)
     driver_stop = threading.Event()
@@ -510,6 +535,53 @@ def test_async_runtime_exports_from_separate_process(tmp_path: Path) -> None:
         assert exporter._monitor_thread.is_alive() is True  # noqa: SLF001
     finally:
         runtime.close()
+
+
+def test_async_exporter_submit_returns_before_slow_worker_queue_put(tmp_path: Path) -> None:
+    class _SlowRequestQueue:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.items: list[object] = []
+
+        def put(self, item: object) -> None:
+            self.started.set()
+            time.sleep(0.2)
+            self.items.append(item)
+
+    class _AliveProcess:
+        def is_alive(self) -> bool:
+            return True
+
+    exporter = AsyncEpisodeExporter(
+        root=tmp_path,
+        project_name="submit_latency_check",
+        fps=10,
+        camera_configs={},
+        video_codec="mp4v",
+        depth_codec="raw",
+        queue_size=1,
+        pending_queue_size=2,
+    )
+    exporter._pending_queue = queue.Queue(maxsize=2)  # noqa: SLF001
+    exporter._request_queue = _SlowRequestQueue()  # noqa: SLF001
+    exporter._process = _AliveProcess()  # noqa: SLF001
+    exporter._started = True  # noqa: SLF001
+    exporter._submit_thread = threading.Thread(  # noqa: SLF001
+        target=exporter._submit_pending_requests,  # noqa: SLF001
+        daemon=True,
+    )
+    exporter._submit_thread.start()  # noqa: SLF001
+
+    try:
+        t0 = time.monotonic()
+        exporter.submit(_make_recorded_episode())
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 0.05
+        assert exporter._request_queue.started.wait(0.1) is True  # noqa: SLF001
+    finally:
+        exporter._pending_queue.put(None)  # noqa: SLF001
+        exporter._submit_thread.join(timeout=1.0)  # noqa: SLF001
 
 
 def test_runtime_from_config_pairs_leaders_and_followers(tmp_path: Path) -> None:

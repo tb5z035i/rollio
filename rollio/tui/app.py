@@ -14,6 +14,7 @@ import numpy as np
 
 from rollio.collect import AsyncCollectionRuntime, RecordedEpisode
 from rollio.config.schema import RollioConfig
+from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.tui.renderer import (
     RENDER_MODES, MODE_LABELS, blit_frame, calc_render_size, render_frame,
 )
@@ -160,6 +161,21 @@ def _robot_panel_lines(
                 lines.append(
                     f"  j{j} \x1b[36m{value_text}\x1b[0m "
                     f"\x1b[33m{bar}\x1b[0m")
+        control_interval = st.get("control_loop_interval_ms")
+        control_target = st.get("control_loop_target_interval_ms")
+        if control_interval is not None and len(control_interval) > 0:
+            interval_text, frac = _format_control_interval_preview(
+                float(control_interval[0]),
+                float(control_target[0])
+                if control_target is not None and len(control_target) > 0
+                else DEFAULT_CONTROL_INTERVAL_MS,
+            )
+            bar_len = int(frac * max(panel_w - 18, 0))
+            bar = "█" * max(bar_len, 0) + "░" * max(panel_w - 18 - bar_len, 0)
+            lines.append(
+                f"  ctrl \x1b[36m{interval_text}\x1b[0m "
+                f"\x1b[33m{bar}\x1b[0m"
+            )
         lines.append("")
 
     return (lines + [""] * panel_h)[:panel_h]
@@ -171,6 +187,27 @@ def _format_joint_preview(robot_type: str, value: float) -> tuple[str, float]:
         return f"{value * 1000.0:6.1f}mm", frac
     frac = float(np.clip((value + 2.0) / 4.0, 0.0, 1.0))
     return f"{value:+6.2f}", frac
+
+
+def _format_control_interval_preview(interval_ms: float, target_interval_ms: float) -> tuple[str, float]:
+    target = max(float(target_interval_ms), 1e-6)
+    observed = max(float(interval_ms), 0.0)
+    frac = float(np.clip(target / max(observed, target), 0.0, 1.0))
+    return f"{observed:5.1f}ms", frac
+
+
+def _estimate_robot_panel_height(states: dict[str, dict[str, np.ndarray] | None]) -> int:
+    height = 1
+    for state in states.values():
+        pos = state.get("position") if state is not None else None
+        joints = len(pos) if pos is not None and len(pos) > 0 else 1
+        has_control = (
+            state is not None
+            and state.get("control_loop_interval_ms") is not None
+            and len(state.get("control_loop_interval_ms")) > 0
+        )
+        height += 1 + joints + (1 if has_control else 0) + 1
+    return height
 
 
 def _help_panel_lines(
@@ -307,7 +344,11 @@ def run_collection(cfg: RollioConfig) -> None:
                 help_w = max(26, min(36, W // 4))
                 left_w = max(20, W - help_w)
                 body_h = max(2, H - status_h)
-                robot_h = min(max(6, len(robot_display) * 8), max(6, body_h // 3)) if robot_display else 0
+                robot_h = (
+                    min(max(6, _estimate_robot_panel_height(robot_display)), max(6, body_h // 3))
+                    if robot_display
+                    else 0
+                )
                 cam_h = max(2, body_h - robot_h)
 
                 # ── Compose frame ────────────────────────────────

@@ -1,0 +1,12 @@
+"""Shared default rates used across Rollio."""
+from __future__ import annotations
+
+DEFAULT_CONTROL_HZ = 250
+DEFAULT_CONTROL_DT_SEC = 1.0 / DEFAULT_CONTROL_HZ
+DEFAULT_CONTROL_INTERVAL_MS = DEFAULT_CONTROL_DT_SEC * 1000.0
+
+__all__ = [
+    "DEFAULT_CONTROL_DT_SEC",
+    "DEFAULT_CONTROL_HZ",
+    "DEFAULT_CONTROL_INTERVAL_MS",
+]

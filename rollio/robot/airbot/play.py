@@ -14,11 +14,21 @@ Control modes:
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from rollio.defaults import DEFAULT_CONTROL_DT_SEC, DEFAULT_CONTROL_HZ
+from rollio.robot.airbot.control_loop import (
+    AirbotDynamicTrackingIntent,
+    AirbotFixedTrackingIntent,
+    AirbotFreeDriveIntent,
+    AirbotIoLoop,
+    AirbotLoopMetrics,
+    clone_wrench,
+)
 from rollio.robot.airbot.shared import (
     _import_airbot_hardware,
     is_airbot_available,
@@ -194,7 +204,7 @@ class AIRBOTPlay(RobotArm):
         self,
         can_interface: str = "can0",
         urdf_path: str | Path | None = None,
-        control_frequency: int = 250,
+        control_frequency: int = DEFAULT_CONTROL_HZ,
         gravity_coefficients: np.ndarray | None = None,
         frame_name: str | None = None,
     ) -> None:
@@ -216,6 +226,11 @@ class AIRBOTPlay(RobotArm):
         self._control_mode = ControlMode.DISABLED
         self._arm = None
         self._executor = None
+        self._io_loop: AirbotIoLoop | None = None
+        self._latest_free_drive_intent: AirbotFreeDriveIntent | None = None
+        self._latest_tracking_intent: (
+            AirbotFixedTrackingIntent | AirbotDynamicTrackingIntent | None
+        ) = None
 
         # Kinematics model (lazy loaded)
         self._kinematics: KinematicsModel | None = None
@@ -397,6 +412,215 @@ class AIRBOTPlay(RobotArm):
             key, self.DEFAULT_GRAVITY_COEFFICIENTS["none"]
         ).copy()
 
+    def _read_direct_joint_state(self) -> JointState:
+        """Read the current joint state directly from the SDK handle."""
+        ts = monotonic_sec()
+
+        if self._arm is None or not self._is_open:
+            return JointState(
+                timestamp=ts,
+                position=None,
+                velocity=None,
+                effort=None,
+                is_valid=False,
+            )
+
+        try:
+            state = self._arm.state()
+        except Exception:
+            return JointState(
+                timestamp=ts,
+                position=None,
+                velocity=None,
+                effort=None,
+                is_valid=False,
+            )
+
+        if not state.is_valid:
+            return JointState(
+                timestamp=ts,
+                position=None,
+                velocity=None,
+                effort=None,
+                is_valid=False,
+            )
+
+        return JointState(
+            timestamp=ts,
+            position=np.array(state.pos, dtype=np.float32),
+            velocity=np.array(state.vel, dtype=np.float32),
+            effort=np.array(state.eff, dtype=np.float32),
+            is_valid=True,
+        )
+
+    def _apply_enabled_request(self, enabled: bool) -> bool:
+        if self._arm is None or not self._is_open:
+            return False
+        if enabled:
+            return bool(self._arm.enable())
+        if self._control_mode == ControlMode.FREE_DRIVE:
+            self._arm.set_param(
+                "arm.control_mode",
+                self._ah.MotorControlMode.PVT,
+            )
+        self._arm.disable()
+        return True
+
+    def _apply_mode_request(self, mode: ControlMode) -> bool:
+        if self._arm is None:
+            return False
+        if mode == ControlMode.FREE_DRIVE:
+            self._arm.set_param(
+                "arm.control_mode",
+                self._ah.MotorControlMode.MIT,
+            )
+            return True
+        if mode == ControlMode.TARGET_TRACKING:
+            self._arm.set_param(
+                "arm.control_mode",
+                self._ah.MotorControlMode.MIT,
+            )
+            return True
+        if mode == ControlMode.DISABLED:
+            self._arm.set_param(
+                "arm.control_mode",
+                self._ah.MotorControlMode.PVT,
+            )
+            return True
+        return False
+
+    def _emit_free_drive(
+        self,
+        joint_state: JointState,
+        intent: AirbotFreeDriveIntent,
+    ) -> None:
+        if self._arm is None or joint_state.position is None:
+            return
+
+        q = np.asarray(joint_state.position, dtype=np.float64)
+        tau_gravity = np.array(
+            self.kinematics.gravity_compensation(q),
+            dtype=np.float64,
+        )
+        tau_gravity *= float(intent.gravity_compensation_scale)
+
+        tau_ext = np.zeros(self.N_DOF, dtype=np.float64)
+        if intent.external_wrench is not None:
+            tau_ext = self.kinematics.wrench_to_joint_torques(
+                q,
+                intent.external_wrench,
+            )
+
+        tau_total = tau_gravity + tau_ext
+        self._arm.mit(
+            [0.0] * self.N_DOF,
+            [0.0] * self.N_DOF,
+            tau_total.tolist(),
+            [0.0] * self.N_DOF,
+            [0.0] * self.N_DOF,
+        )
+
+    def _emit_fixed_tracking(self, intent: AirbotFixedTrackingIntent) -> None:
+        if self._arm is None:
+            return
+        tau_ff = (
+            np.zeros(self.N_DOF, dtype=np.float64)
+            if intent.feedforward is None
+            else np.asarray(intent.feedforward, dtype=np.float64)
+        )
+        kp = self.TARGET_TRACKING_KP.copy()
+        kd = self.TARGET_TRACKING_KD.copy()
+        self._arm.mit(
+            np.asarray(intent.position_target, dtype=np.float64).tolist(),
+            np.asarray(intent.velocity_target, dtype=np.float64).tolist(),
+            tau_ff.tolist(),
+            kp.tolist(),
+            kd.tolist(),
+        )
+
+    def _emit_dynamic_tracking(
+        self,
+        joint_state: JointState,
+        intent: AirbotDynamicTrackingIntent,
+    ) -> None:
+        tau_ff = (
+            np.zeros(self.N_DOF, dtype=np.float64)
+            if intent.user_feedforward is None
+            else np.asarray(intent.user_feedforward, dtype=np.float64).copy()
+        )
+        if intent.add_gravity_compensation and joint_state.position is not None:
+            tau_ff = tau_ff + self.kinematics.gravity_compensation(
+                np.asarray(joint_state.position, dtype=np.float64),
+            )
+        self._emit_fixed_tracking(
+            AirbotFixedTrackingIntent(
+                position_target=np.asarray(intent.position_target, dtype=np.float64),
+                velocity_target=np.asarray(intent.velocity_target, dtype=np.float64),
+                feedforward=tau_ff,
+                kp=intent.kp,
+                kd=intent.kd,
+                published_at=intent.published_at,
+            ),
+        )
+
+    def _control_cycle(self, joint_state: JointState, mode: ControlMode) -> None:
+        if mode == ControlMode.FREE_DRIVE:
+            intent = self._latest_free_drive_intent
+            if intent is not None:
+                self._emit_free_drive(joint_state, intent)
+            return
+        if mode == ControlMode.TARGET_TRACKING:
+            intent = self._latest_tracking_intent
+            if isinstance(intent, AirbotDynamicTrackingIntent):
+                self._emit_dynamic_tracking(joint_state, intent)
+                return
+            if isinstance(intent, AirbotFixedTrackingIntent):
+                self._emit_fixed_tracking(intent)
+
+    def _start_io_loop(self) -> None:
+        if self._io_loop is not None:
+            return
+        initial_state = self._read_direct_joint_state()
+        self._io_loop = AirbotIoLoop(
+            name=f"rollio-airbot-play-{self._can_interface}",
+            period_sec=self._dt,
+            read_joint_state=self._read_direct_joint_state,
+            apply_enabled=self._apply_enabled_request,
+            apply_mode=self._apply_mode_request,
+            cycle=self._control_cycle,
+            initial_joint_state=initial_state,
+            initial_enabled=self._is_enabled,
+            initial_mode=self._control_mode,
+        )
+        self._io_loop.start()
+
+    def _stop_io_loop(self) -> None:
+        if self._io_loop is None:
+            return
+        self._io_loop.stop()
+        self._io_loop = None
+
+    def _publish_free_drive_intent(self, intent: AirbotFreeDriveIntent) -> None:
+        self._latest_free_drive_intent = intent
+        if self._io_loop is not None:
+            self._io_loop.wake()
+
+    def _publish_fixed_tracking_intent(
+        self,
+        intent: AirbotFixedTrackingIntent,
+    ) -> None:
+        self._latest_tracking_intent = intent
+        if self._io_loop is not None:
+            self._io_loop.wake()
+
+    def _publish_dynamic_tracking_intent(
+        self,
+        intent: AirbotDynamicTrackingIntent,
+    ) -> None:
+        self._latest_tracking_intent = intent
+        if self._io_loop is not None:
+            self._io_loop.wake()
+
     # ── Properties ────────────────────────────────────────────────────────
 
     @property
@@ -425,6 +649,11 @@ class AIRBOTPlay(RobotArm):
     def can_interface(self) -> str:
         """Get the CAN interface name."""
         return self._can_interface
+
+    def control_loop_metrics(self) -> AirbotLoopMetrics:
+        if self._io_loop is not None:
+            return self._io_loop.metrics()
+        return AirbotLoopMetrics(target_interval_ms=self._dt * 1000.0, run_count=0)
 
     @property
     def gravity_coefficients(self) -> np.ndarray:
@@ -577,6 +806,7 @@ class AIRBOTPlay(RobotArm):
             raise
 
         self._is_open = True
+        self._start_io_loop()
 
     def close(self) -> None:
         """Close connection to AIRBOT arm."""
@@ -585,10 +815,13 @@ class AIRBOTPlay(RobotArm):
         try:
             if self._is_enabled:
                 self.disable()
+            self._stop_io_loop()
             if self._arm is not None:
                 self._arm.uninit()
                 self._arm = None
         finally:
+            self._latest_free_drive_intent = None
+            self._latest_tracking_intent = None
             self._executor = None
             self._is_open = False
 
@@ -596,57 +829,30 @@ class AIRBOTPlay(RobotArm):
         """Enable AIRBOT motors."""
         if not self._is_open or self._arm is None:
             return False
-        enabled = self._arm.enable()
-        self._is_enabled = bool(enabled)
+        if self._io_loop is None:
+            self._is_enabled = self._apply_enabled_request(True)
+            return self._is_enabled
+        self._is_enabled = self._io_loop.request_enabled(True)
         return self._is_enabled
 
     def disable(self) -> None:
         """Disable AIRBOT motors (safe state)."""
-        if self._arm is not None and self._is_enabled:
-            # First, switch to PVT mode and go to safe position if needed
-            if self._control_mode == ControlMode.FREE_DRIVE:
-                self._arm.set_param(
-                    "arm.control_mode",
-                    self._ah.MotorControlMode.PVT,
-                )
-            self._arm.disable()
-
+        if self._io_loop is not None:
+            self._io_loop.request_enabled(False)
+        elif self._arm is not None and self._is_enabled:
+            self._apply_enabled_request(False)
         self._is_enabled = False
         self._control_mode = ControlMode.DISABLED
+        self._latest_free_drive_intent = None
+        self._latest_tracking_intent = None
 
     # ── State Reading ─────────────────────────────────────────────────────
 
     def read_joint_state(self) -> JointState:
         """Read current joint state from AIRBOT arm."""
-        ts = monotonic_sec()
-
-        if self._arm is None or not self._is_open:
-            return JointState(
-                timestamp=ts,
-                position=None,
-                velocity=None,
-                effort=None,
-                is_valid=False
-            )
-
-        state = self._arm.state()
-
-        if not state.is_valid:
-            return JointState(
-                timestamp=ts,
-                position=None,
-                velocity=None,
-                effort=None,
-                is_valid=False
-            )
-
-        return JointState(
-            timestamp=ts,
-            position=np.array(state.pos, dtype=np.float32),
-            velocity=np.array(state.vel, dtype=np.float32),
-            effort=np.array(state.eff, dtype=np.float32),
-            is_valid=True
-        )
+        if self._io_loop is not None:
+            return self._io_loop.latest_joint_state()
+        return self._read_direct_joint_state()
 
     # ── Control Mode Setting ──────────────────────────────────────────────
 
@@ -654,111 +860,103 @@ class AIRBOTPlay(RobotArm):
         """Set the control mode."""
         if not self._is_enabled or self._arm is None:
             return False
+        if self._io_loop is not None:
+            ok = self._io_loop.request_mode(mode)
+        else:
+            ok = self._apply_mode_request(mode)
+        if not ok:
+            return False
+        self._control_mode = mode
         if mode == ControlMode.FREE_DRIVE:
-            # MIT mode for free drive (torque control)
-            self._arm.set_param(
-                "arm.control_mode",
-                self._ah.MotorControlMode.MIT
+            self._latest_tracking_intent = None
+            self._publish_free_drive_intent(
+                AirbotFreeDriveIntent(
+                    gravity_compensation_scale=1.0,
+                    external_wrench=None,
+                    published_at=time.monotonic(),
+                ),
             )
         elif mode == ControlMode.TARGET_TRACKING:
-            # MIT mode for target tracking (PD + feedforward)
-            self._arm.set_param(
-                "arm.control_mode",
-                self._ah.MotorControlMode.MIT
-            )
+            self._latest_free_drive_intent = None
         elif mode == ControlMode.DISABLED:
-            # PVT mode for safe state
-            self._arm.set_param(
-                "arm.control_mode",
-                self._ah.MotorControlMode.PVT
-            )
-        else:
-            return False
-
-        self._control_mode = mode
+            self._latest_free_drive_intent = None
+            self._latest_tracking_intent = None
         return True
 
     # ── Free Drive Mode ───────────────────────────────────────────────────
 
     def command_free_drive(self, cmd: FreeDriveCommand) -> None:
-        """Execute free drive command on AIRBOT arm.
-
-        In free drive mode:
-        1. Compute gravity compensation torques (EEF coefficients are already
-           baked into ``self.kinematics.gravity_compensation()`` via the
-           ``AIRBOTKinematicsModel`` wrapper)
-        2. Apply the caller's gravity scale
-        3. If external wrench is provided, transform to joint torques via Jacobian
-        4. Send combined torques via MIT mode with zero position/velocity targets
-        """
+        """Publish the latest free-drive intent for the device thread."""
         if self._control_mode != ControlMode.FREE_DRIVE or self._arm is None:
             return
-
-        # Read current joint state
-        state = self._arm.state()
-        if not state.is_valid:
-            return
-        q = np.array(state.pos)
-
-        # Gravity compensation (already includes AIRBOT EEF coefficients)
-        tau_gravity = np.array(
-            self.kinematics.gravity_compensation(q),
-            dtype=np.float64,
-        )
-        tau_gravity *= cmd.gravity_compensation_scale
-
-        # Compute external wrench contribution
-        tau_ext = np.zeros(self.N_DOF)
-        if cmd.external_wrench is not None:
-            tau_ext = self.kinematics.wrench_to_joint_torques(
-                q, cmd.external_wrench
-            )
-
-        # Combined torques
-        tau_total = tau_gravity + tau_ext
-
-        # Send MIT command: position=0, velocity=0, torque=tau, kp=0, kd=0
-        self._arm.mit(
-            [0.0] * self.N_DOF,
-            [0.0] * self.N_DOF,
-            tau_total.tolist(),
-            [0.0] * self.N_DOF,
-            [0.0] * self.N_DOF,
+        self._publish_free_drive_intent(
+            AirbotFreeDriveIntent(
+                gravity_compensation_scale=float(cmd.gravity_compensation_scale),
+                external_wrench=clone_wrench(cmd.external_wrench),
+                published_at=time.monotonic(),
+            ),
         )
 
     # ── Target Tracking Mode ──────────────────────────────────────────────
 
     def command_target_tracking(self, cmd: TargetTrackingCommand) -> None:
-        """Execute target tracking command on AIRBOT arm.
-
-        MIT control law: tau = kp * (q_target - q) + kd * (qd_target - qd) + ff
-
-        Note: gravity compensation is NOT added here.  The base class
-        convenience method ``step_target_tracking()`` already computes
-        gravity via ``self.kinematics.gravity_compensation()`` — which,
-        for AIRBOT, is the ``AIRBOTKinematicsModel`` wrapper that
-        automatically applies the per-joint EEF coefficients.
-        This method is a thin passthrough to the hardware MIT command.
-        """
+        """Publish one fixed tracking packet for the device thread."""
         if self._control_mode != ControlMode.TARGET_TRACKING or self._arm is None:
             return
+        self._publish_fixed_tracking_intent(
+            AirbotFixedTrackingIntent(
+                position_target=np.asarray(
+                    cmd.position_target,
+                    dtype=np.float64,
+                ).copy(),
+                velocity_target=np.asarray(
+                    cmd.velocity_target,
+                    dtype=np.float64,
+                ).copy(),
+                feedforward=None
+                if cmd.feedforward is None
+                else np.asarray(cmd.feedforward, dtype=np.float64).copy(),
+                kp=None if cmd.kp is None else np.asarray(cmd.kp, dtype=np.float64).copy(),
+                kd=None if cmd.kd is None else np.asarray(cmd.kd, dtype=np.float64).copy(),
+                published_at=time.monotonic(),
+            ),
+        )
 
-        tau_ff = np.zeros(self.N_DOF)
-        if cmd.feedforward is not None:
-            tau_ff = np.asarray(cmd.feedforward, dtype=np.float64)
-
-        # The AIRBOT MIT controller expects fixed per-joint gains in target-
-        # tracking mode; ignore caller-provided gains and always send the
-        # controller-approved arrays.
-        kp = self.TARGET_TRACKING_KP.copy()
-        kd = self.TARGET_TRACKING_KD.copy()
-
-        self._arm.mit(
-            cmd.position_target.tolist(),
-            cmd.velocity_target.tolist(),
-            tau_ff.tolist(),
-            kp.tolist(),
-            kd.tolist(),
+    def step_target_tracking(
+        self,
+        position_target: np.ndarray,
+        velocity_target: np.ndarray | None = None,
+        kp: np.ndarray | float = 10.0,
+        kd: np.ndarray | float = 1.0,
+        feedforward: np.ndarray | None = None,
+        add_gravity_compensation: bool = True,
+    ) -> None:
+        """Publish a high-level tracking target that the device thread replays."""
+        if self._control_mode != ControlMode.TARGET_TRACKING or self._arm is None:
+            return
+        n = self.n_dof
+        if velocity_target is None:
+            velocity_target = np.zeros(n, dtype=np.float64)
+        if np.isscalar(kp):
+            kp = np.full(n, float(kp), dtype=np.float64)
+        else:
+            kp = np.asarray(kp, dtype=np.float64).copy()
+        if np.isscalar(kd):
+            kd = np.full(n, float(kd), dtype=np.float64)
+        else:
+            kd = np.asarray(kd, dtype=np.float64).copy()
+        self._publish_dynamic_tracking_intent(
+            AirbotDynamicTrackingIntent(
+                position_target=np.asarray(position_target, dtype=np.float64).copy(),
+                velocity_target=np.asarray(velocity_target, dtype=np.float64).copy(),
+                user_feedforward=None
+                if feedforward is None
+                else np.asarray(feedforward, dtype=np.float64).copy(),
+                kp=kp,
+                kd=kd,
+                add_gravity_compensation=bool(add_gravity_compensation),
+                published_at=time.monotonic(),
+            ),
         )
 
     # ── PVT Mode (Position-Velocity-Torque) ───────────────────────────────
@@ -799,13 +997,16 @@ class AIRBOTPlay(RobotArm):
         Returns:
             True if home position reached
         """
-        import time
-
         if self._arm is None or not self._is_enabled:
             return False
 
+        self._stop_io_loop()
+
         # Switch to PVT mode
         self._arm.set_param("arm.control_mode", self._ah.MotorControlMode.PVT)
+        self._control_mode = ControlMode.DISABLED
+        self._latest_free_drive_intent = None
+        self._latest_tracking_intent = None
 
         home_pos = [0.0] * self.N_DOF
         move_vel = [0.5] * self.N_DOF  # rad/s
@@ -813,16 +1014,20 @@ class AIRBOTPlay(RobotArm):
 
         start_time = time.monotonic()
 
-        while time.monotonic() - start_time < timeout:
-            state = self._arm.state()
-            if state.is_valid:
-                self._arm.pvt(home_pos, move_vel, move_tau)
+        try:
+            while time.monotonic() - start_time < timeout:
+                state = self._arm.state()
+                if state.is_valid:
+                    self._arm.pvt(home_pos, move_vel, move_tau)
 
-                # Check if at home
-                if all(abs(p) < 0.01 for p in state.pos):
-                    return True
+                    # Check if at home
+                    if all(abs(p) < 0.01 for p in state.pos):
+                        return True
 
-            time.sleep(self._dt)
+                time.sleep(self._dt)
+        finally:
+            if self._is_open and self._arm is not None:
+                self._start_io_loop()
 
         return False
 
@@ -830,7 +1035,7 @@ class AIRBOTPlay(RobotArm):
         self,
         timeout: float = 10.0,
         tolerance: float = 0.01,
-        dt: float = 0.004,
+        dt: float = DEFAULT_CONTROL_DT_SEC,
     ) -> bool:
         del tolerance, dt
         return self.move_to_home(timeout=timeout)

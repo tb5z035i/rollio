@@ -130,11 +130,11 @@ class _DirectSDKG2Controller:
             raise RuntimeError("Direct G2 controller is not open.")
         cmd = self._ah.EEFCommand1()
         cmd.pos = [float(target)]
-        cmd.vel = [10.0]
-        cmd.current_threshold = [10.0]
+        cmd.vel = [200.0]
+        cmd.current_threshold = [200.0]
         self._eef.pvt(cmd)
         self._last_debug = (
-            f"PVT pos=[{target:7.4f}] vel=[10.0000] current_threshold=[10.0000]"
+            f"PVT pos=[{target:7.4f}] vel=[200.0000] current_threshold=[200.0000]"
         )
 
     def read_position(self) -> float | None:

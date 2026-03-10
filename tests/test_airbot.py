@@ -6,11 +6,13 @@ Hardware-dependent tests are marked and can be skipped.
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
+from rollio.defaults import DEFAULT_CONTROL_HZ
 from rollio.robot import (
     ControlMode,
     DetectedRobot,
@@ -22,6 +24,26 @@ from rollio.robot import (
     Wrench,
     scan_robots,
 )
+
+
+def _wait_until(
+    predicate,
+    *,
+    timeout: float = 0.3,
+    interval: float = 0.01,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+def _pinocchio_available() -> bool:
+    from rollio.robot.pinocchio_kinematics import is_pinocchio_available
+
+    return is_pinocchio_available()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -120,7 +142,7 @@ class TestCANProtocol:
     
     def test_protocol_constants(self) -> None:
         """Test CAN protocol constants are defined."""
-        from rollio.robot.can_utils import (
+        from rollio.robot.airbot.can import (
             AIRBOT_BROADCAST_ID,
             AIRBOT_EEF_QUERY_ID,
             AIRBOT_EEF_RESPONSE_ID,
@@ -147,7 +169,7 @@ class TestCANProtocol:
     
     def test_end_effector_types(self) -> None:
         """Test end effector type mapping."""
-        from rollio.robot.can_utils import AIRBOT_EEF_TYPES
+        from rollio.robot.airbot.can import AIRBOT_EEF_TYPES
         
         assert AIRBOT_EEF_TYPES[0x00] == "none"
         assert AIRBOT_EEF_TYPES[0x02] == "E2B"
@@ -195,22 +217,22 @@ class TestAIRBOTPlayMocked:
         mock_executor.get_io_context.return_value = MagicMock()
         mock_ah.create_asio_executor.return_value = mock_executor
         monkeypatch.setattr(
-            "rollio.robot.airbot_play.query_airbot_end_effector",
+            "rollio.robot.airbot.play.query_airbot_end_effector",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "rollio.robot.airbot_play.query_airbot_gravity_coefficients",
+            "rollio.robot.airbot.play.query_airbot_gravity_coefficients",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "rollio.robot.airbot_play.query_airbot_serial",
+            "rollio.robot.airbot.play.query_airbot_serial",
             lambda *args, **kwargs: None,
         )
 
         return mock_ah, mock_arm
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_creation(
         self, 
         mock_import: MagicMock, 
@@ -221,7 +243,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         
@@ -229,8 +251,8 @@ class TestAIRBOTPlayMocked:
         assert robot.can_interface == "can0"
         assert robot.ROBOT_TYPE == "airbot_play"
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_open_close(
         self,
         mock_import: MagicMock,
@@ -241,7 +263,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         
@@ -255,8 +277,8 @@ class TestAIRBOTPlayMocked:
         assert not robot._is_open
         mock_arm.uninit.assert_called_once()
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_enable_disable(
         self,
         mock_import: MagicMock,
@@ -267,7 +289,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         robot.open()
@@ -284,8 +306,8 @@ class TestAIRBOTPlayMocked:
         
         robot.close()
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_read_joint_state(
         self,
         mock_import: MagicMock,
@@ -296,7 +318,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         robot.open()
@@ -315,8 +337,8 @@ class TestAIRBOTPlayMocked:
         
         robot.close()
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_control_modes(
         self,
         mock_import: MagicMock,
@@ -327,7 +349,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         robot.open()
@@ -343,8 +365,8 @@ class TestAIRBOTPlayMocked:
         
         robot.close()
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_free_drive_command(
         self,
         mock_import: MagicMock,
@@ -355,7 +377,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         robot.open()
@@ -369,13 +391,12 @@ class TestAIRBOTPlayMocked:
         
         robot.command_free_drive(cmd)
         
-        # Verify MIT was called
-        mock_arm.mit.assert_called()
+        assert _wait_until(lambda: mock_arm.mit.call_count >= 1)
         
         robot.close()
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_target_tracking_command(
         self,
         mock_import: MagicMock,
@@ -386,7 +407,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         robot.open()
@@ -403,8 +424,7 @@ class TestAIRBOTPlayMocked:
         
         robot.command_target_tracking(cmd)
         
-        # Verify MIT was called with correct arguments
-        mock_arm.mit.assert_called_once()
+        assert _wait_until(lambda: mock_arm.mit.call_count >= 1)
         call_args = mock_arm.mit.call_args[0]
         assert len(call_args) == 5  # pos, vel, tau, kp, kd
         np.testing.assert_array_equal(
@@ -417,9 +437,46 @@ class TestAIRBOTPlayMocked:
         )
         
         robot.close()
+
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
+    def test_airbot_target_tracking_replays_at_background_rate(
+        self,
+        mock_import: MagicMock,
+        mock_can_up: MagicMock,
+        mock_airbot_hardware,
+    ) -> None:
+        mock_ah, mock_arm = mock_airbot_hardware
+        mock_import.return_value = (mock_ah, True)
+
+        from rollio.robot.airbot.play import AIRBOTPlay
+
+        robot = AIRBOTPlay(can_interface="can0")
+        robot.open()
+        robot.enable()
+        robot.set_control_mode(ControlMode.TARGET_TRACKING)
+
+        robot.step_target_tracking(
+            position_target=np.zeros(6, dtype=np.float64),
+            velocity_target=np.zeros(6, dtype=np.float64),
+            add_gravity_compensation=True,
+        )
+        assert _wait_until(lambda: mock_arm.mit.call_count >= 2)
+
+        start_count = mock_arm.mit.call_count
+        t0 = time.monotonic()
+        time.sleep(0.12)
+        elapsed = time.monotonic() - t0
+        delta = mock_arm.mit.call_count - start_count
+        rate_hz = delta / max(elapsed, 1e-6)
+
+        assert delta >= 8
+        assert 0.5 * DEFAULT_CONTROL_HZ <= rate_hz <= 1.6 * DEFAULT_CONTROL_HZ
+
+        robot.close()
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_info(
         self,
         mock_import: MagicMock,
@@ -430,7 +487,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         info = robot.info
@@ -441,8 +498,8 @@ class TestAIRBOTPlayMocked:
         assert FeedbackCapability.VELOCITY in info.feedback_capabilities
         assert FeedbackCapability.EFFORT in info.feedback_capabilities
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_gravity_scale(
         self,
         mock_import: MagicMock,
@@ -453,7 +510,7 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         
@@ -462,7 +519,7 @@ class TestAIRBOTPlayMocked:
         assert len(default_scale) == 6
         np.testing.assert_array_almost_equal(
             default_scale,
-            [0.6, 0.6, 0.6, 1.317, 1.378, 0.864]
+            [0.6, 0.6, 0.6, 1.6, 1.248, 1.5]
         )
         
         # Set custom scale
@@ -473,9 +530,9 @@ class TestAIRBOTPlayMocked:
             custom_scale
         )
     
-    @patch('rollio.robot.airbot_play.set_airbot_led')
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.set_airbot_led')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_identify_start_led_only(
         self,
         mock_import: MagicMock,
@@ -488,7 +545,7 @@ class TestAIRBOTPlayMocked:
         mock_import.return_value = (mock_ah, True)
         mock_set_led.return_value = True
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         
@@ -498,9 +555,9 @@ class TestAIRBOTPlayMocked:
         assert result is True
         mock_set_led.assert_called_once_with("can0", blink_orange=True)
     
-    @patch('rollio.robot.airbot_play.set_airbot_led')
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.set_airbot_led')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_identify_start_with_gravity_comp(
         self,
         mock_import: MagicMock,
@@ -519,7 +576,7 @@ class TestAIRBOTPlayMocked:
         mock_arm.get_current_joint_torque.return_value = [0.0] * 6
         mock_arm.set_joint_torque.return_value = None
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         
@@ -532,9 +589,9 @@ class TestAIRBOTPlayMocked:
         assert robot._is_open is True
         assert robot._is_enabled is True
     
-    @patch('rollio.robot.airbot_play.set_airbot_led')
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.set_airbot_led')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_identify_stop_led_only(
         self,
         mock_import: MagicMock,
@@ -547,7 +604,7 @@ class TestAIRBOTPlayMocked:
         mock_import.return_value = (mock_ah, True)
         mock_set_led.return_value = True
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         
@@ -557,9 +614,9 @@ class TestAIRBOTPlayMocked:
         assert result is True
         mock_set_led.assert_called_once_with("can0", blink_orange=False)
     
-    @patch('rollio.robot.airbot_play.set_airbot_led')
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.set_airbot_led')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_identify_stop(
         self,
         mock_import: MagicMock,
@@ -573,7 +630,7 @@ class TestAIRBOTPlayMocked:
         mock_set_led.return_value = True
         mock_ah.Arm.return_value = mock_arm
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         # Simulate robot being open
@@ -585,10 +642,10 @@ class TestAIRBOTPlayMocked:
         assert result is True
         mock_set_led.assert_called_once_with("can0", blink_orange=False)
     
-    @patch('rollio.robot.airbot_play.query_airbot_end_effector')
-    @patch('rollio.robot.airbot_play.query_airbot_serial')
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.query_airbot_end_effector')
+    @patch('rollio.robot.airbot.play.query_airbot_serial')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_properties(
         self,
         mock_import: MagicMock,
@@ -603,7 +660,7 @@ class TestAIRBOTPlayMocked:
         mock_query_serial.return_value = "PZ25C02402000244"
         mock_query_eef.return_value = {"type_code": 2, "type_name": "E2B"}
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         
@@ -623,8 +680,8 @@ class TestAIRBOTPlayMocked:
         assert robot.serial_number == "PZ25C02402000244"
         assert robot.end_effector_type == "E2B"
     
-    @patch('rollio.robot.airbot_play.is_can_interface_up', return_value=True)
-    @patch('rollio.robot.airbot_play._import_airbot_hardware')
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
     def test_airbot_properties_default(
         self,
         mock_import: MagicMock,
@@ -635,13 +692,13 @@ class TestAIRBOTPlayMocked:
         mock_ah, mock_arm = mock_airbot_hardware
         mock_import.return_value = (mock_ah, True)
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         robot = AIRBOTPlay(can_interface="can0")
         
         props = robot.properties
         assert props["can_interface"] == "can0"
-        assert props["control_frequency"] == 250
+        assert props["control_frequency"] == DEFAULT_CONTROL_HZ
         assert props["motor_types"] == ["OD", "OD", "OD", "DM", "DM", "DM"]
         
         # Serial and EEF not queried yet
@@ -702,7 +759,7 @@ class TestAIRBOTEEFMocked:
 
         return mock_ah, mock_eef
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_g2_open_read_and_command(
         self,
         mock_import: MagicMock,
@@ -711,7 +768,7 @@ class TestAIRBOTEEFMocked:
         mock_ah, mock_eef = mock_airbot_eef_hardware
         mock_import.return_value = (mock_ah, True)
 
-        from rollio.robot.airbot_eef import AIRBOTG2
+        from rollio.robot.airbot.eef import AIRBOTG2
 
         robot = AIRBOTG2(can_interface="can0")
         robot.open()
@@ -726,22 +783,22 @@ class TestAIRBOTEEFMocked:
 
         mock_eef.enable.assert_called_once()
         mock_eef.set_param.assert_any_call("control_mode", "PVT")
-        mock_eef.pvt.assert_called_once()
+        assert _wait_until(lambda: mock_eef.pvt.call_count >= 1)
         payload = mock_eef.pvt.call_args[0][0]
         assert payload.pos == [0.06]
-        assert payload.vel == [100.0]
+        assert payload.vel == [200.0]
         assert payload.eff == [0.0]
         assert payload.mit_kp == [0.0]
         assert payload.mit_kd == [0.0]
-        assert payload.current_threshold == [10.0]
+        assert payload.current_threshold == [200.0]
         command_debug = robot.latest_command_debug()
         assert command_debug is not None
         assert command_debug[0] == "PVT"
-        assert "current_threshold=[10.0000]" in command_debug[1]
+        assert "current_threshold=[200.0000]" in command_debug[1]
         mock_eef.mit.assert_not_called()
         robot.close()
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_g2_command_payload_uses_attribute_assignment_for_copy_on_read_sdk(
         self,
         mock_import: MagicMock,
@@ -809,7 +866,7 @@ class TestAIRBOTEEFMocked:
 
         mock_ah.EEFCommand1 = _CopyOnReadCommand
 
-        from rollio.robot.airbot_eef import AIRBOTG2
+        from rollio.robot.airbot.eef import AIRBOTG2
 
         robot = AIRBOTG2(can_interface="can0")
         payload = robot._build_command_payload(  # noqa: SLF001
@@ -823,14 +880,14 @@ class TestAIRBOTEEFMocked:
 
         assert payload is not None
         assert payload.pos == [0.035]
-        assert payload.vel == [100.0]
+        assert payload.vel == [10.0]
         assert payload.eff == [0.0]
         assert payload.mit_kp == [0.0]
         assert payload.mit_kd == [0.0]
         assert payload.current_threshold == [10.0]
 
-    @patch("rollio.robot.airbot_eef.set_airbot_led")
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef.set_airbot_led")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_g2_identification_oscillates_with_fixed_gains(
         self,
         mock_import: MagicMock,
@@ -841,30 +898,32 @@ class TestAIRBOTEEFMocked:
         mock_import.return_value = (mock_ah, True)
         mock_set_led.return_value = True
 
-        from rollio.robot.airbot_eef import AIRBOTG2
+        from rollio.robot.airbot.eef import AIRBOTG2
 
         robot = AIRBOTG2(can_interface="can0")
 
-        with patch("rollio.robot.airbot_eef.time.monotonic", side_effect=[10.0, 10.0, 10.5]):
+        with patch.object(robot, "_identify_target_position", return_value=np.array([0.035])):
             assert robot.identify_start() is True
             robot.identify_step()
 
         mock_set_led.assert_called_once_with("can0", blink_orange=True)
+        assert _wait_until(lambda: mock_eef.set_param.call_count >= 1)
         mock_eef.set_param.assert_any_call("control_mode", "PVT")
+        assert _wait_until(lambda: mock_eef.pvt.call_count >= 1)
         payload = mock_eef.pvt.call_args[0][0]
         assert 0.0 <= payload.pos[0] <= 0.07
-        assert payload.vel == [100.0]
+        assert payload.vel == [200.0]
         assert payload.mit_kp == [0.0]
         assert payload.mit_kd == [0.0]
         assert payload.eff == [0.0]
-        assert payload.current_threshold == [10.0]
+        assert payload.current_threshold == [200.0]
         command_debug = robot.latest_command_debug()
         assert command_debug is not None
         assert command_debug[0] == "PVT"
         assert "pos=" in command_debug[1]
 
-    @patch("rollio.robot.airbot_eef.set_airbot_led")
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef.set_airbot_led")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_e2b_identification_keeps_feedback_alive(
         self,
         mock_import: MagicMock,
@@ -875,7 +934,7 @@ class TestAIRBOTEEFMocked:
         mock_import.return_value = (mock_ah, True)
         mock_set_led.return_value = True
 
-        from rollio.robot.airbot_eef import AIRBOTE2B
+        from rollio.robot.airbot.eef import AIRBOTE2B
 
         robot = AIRBOTE2B(can_interface="can0")
 
@@ -888,9 +947,9 @@ class TestAIRBOTEEFMocked:
         assert param_call[0][0] == "eef.e2.mode"
         assert param_call[0][1].param_type == "UINT32_LE"
         assert param_call[0][1].value == 4
-        assert mock_eef.mit.call_count >= 1
+        assert _wait_until(lambda: mock_eef.mit.call_count >= 1)
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_e2b_ignores_false_mode_return_when_sdk_does_not_report_success(
         self,
         mock_import: MagicMock,
@@ -900,7 +959,7 @@ class TestAIRBOTEEFMocked:
         mock_import.return_value = (mock_ah, True)
         mock_eef.set_param.return_value = False
 
-        from rollio.robot.airbot_eef import AIRBOTE2B
+        from rollio.robot.airbot.eef import AIRBOTE2B
 
         robot = AIRBOTE2B(can_interface="can1")
         robot.open()
@@ -909,7 +968,7 @@ class TestAIRBOTEEFMocked:
         assert robot.control_mode == ControlMode.FREE_DRIVE
         robot.close()
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_eef_set_control_mode_fails_when_sdk_rejects_change(
         self,
         mock_import: MagicMock,
@@ -919,7 +978,7 @@ class TestAIRBOTEEFMocked:
         mock_import.return_value = (mock_ah, True)
         mock_eef.set_param.return_value = False
 
-        from rollio.robot.airbot_eef import AIRBOTG2
+        from rollio.robot.airbot.eef import AIRBOTG2
 
         robot = AIRBOTG2(can_interface="can0")
         robot.open()
@@ -929,7 +988,7 @@ class TestAIRBOTEEFMocked:
         assert robot.control_mode == ControlMode.DISABLED
         robot.close()
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_eef_accepts_void_sdk_mutators(
         self,
         mock_import: MagicMock,
@@ -940,7 +999,7 @@ class TestAIRBOTEEFMocked:
         mock_eef.enable.return_value = None
         mock_eef.set_param.return_value = None
 
-        from rollio.robot.airbot_eef import AIRBOTG2
+        from rollio.robot.airbot.eef import AIRBOTG2
 
         robot = AIRBOTG2(can_interface="can0")
         robot.open()
@@ -952,7 +1011,7 @@ class TestAIRBOTEEFMocked:
 
         robot.close()
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_e2b_info_reflects_single_axis_entity(
         self,
         mock_import: MagicMock,
@@ -961,7 +1020,7 @@ class TestAIRBOTEEFMocked:
         mock_ah, _mock_eef = mock_airbot_eef_hardware
         mock_import.return_value = (mock_ah, True)
 
-        from rollio.robot.airbot_eef import AIRBOTE2B
+        from rollio.robot.airbot.eef import AIRBOTE2B
 
         robot = AIRBOTE2B(can_interface="can2")
 
@@ -971,7 +1030,7 @@ class TestAIRBOTEEFMocked:
         assert robot.properties["end_effector_type"] == "E2B"
         assert robot.properties["eef_motor_type"] == "OD"
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_e2b_rejects_non_od_motor_type(
         self,
         mock_import: MagicMock,
@@ -980,12 +1039,12 @@ class TestAIRBOTEEFMocked:
         mock_ah, _mock_eef = mock_airbot_eef_hardware
         mock_import.return_value = (mock_ah, True)
 
-        from rollio.robot.airbot_eef import AIRBOTE2B
+        from rollio.robot.airbot.eef import AIRBOTE2B
 
         with pytest.raises(ValueError, match="only supports the standalone AIRBOT EEF combination"):
             AIRBOTE2B(can_interface="can0", motor_type="DM")
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_e2b_free_drive_refreshes_current_feedback(
         self,
         mock_import: MagicMock,
@@ -994,7 +1053,7 @@ class TestAIRBOTEEFMocked:
         mock_ah, mock_eef = mock_airbot_eef_hardware
         mock_import.return_value = (mock_ah, True)
 
-        from rollio.robot.airbot_eef import AIRBOTE2B
+        from rollio.robot.airbot.eef import AIRBOTE2B
 
         robot = AIRBOTE2B(can_interface="can0")
         robot.open()
@@ -1010,7 +1069,7 @@ class TestAIRBOTEEFMocked:
         assert param_call[0][0] == "eef.e2.mode"
         assert param_call[0][1].param_type == "UINT32_LE"
         assert param_call[0][1].value == 4
-        assert mock_eef.mit.call_count >= 1
+        assert _wait_until(lambda: mock_eef.mit.call_count >= 1)
         payload = mock_eef.mit.call_args[0][0]
         assert payload.pos == [0.0]
         assert payload.vel == [0.0]
@@ -1020,8 +1079,8 @@ class TestAIRBOTEEFMocked:
         assert payload.current_threshold == [0.0]
         mock_eef.ping.assert_not_called()
 
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
-    def test_airbot_e2b_passive_read_does_not_refresh_without_keepalive(
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    def test_airbot_e2b_keepalive_replays_at_background_rate(
         self,
         mock_import: MagicMock,
         mock_airbot_eef_hardware,
@@ -1029,7 +1088,36 @@ class TestAIRBOTEEFMocked:
         mock_ah, mock_eef = mock_airbot_eef_hardware
         mock_import.return_value = (mock_ah, True)
 
-        from rollio.robot.airbot_eef import AIRBOTE2B
+        from rollio.robot.airbot.eef import AIRBOTE2B
+
+        robot = AIRBOTE2B(can_interface="can0")
+        robot.open()
+        robot.enable()
+        robot.set_control_mode(ControlMode.FREE_DRIVE)
+        assert _wait_until(lambda: mock_eef.mit.call_count >= 2)
+
+        start_count = mock_eef.mit.call_count
+        t0 = time.monotonic()
+        time.sleep(0.12)
+        elapsed = time.monotonic() - t0
+        delta = mock_eef.mit.call_count - start_count
+        rate_hz = delta / max(elapsed, 1e-6)
+
+        assert delta >= 8
+        assert 0.5 * DEFAULT_CONTROL_HZ <= rate_hz <= 1.6 * DEFAULT_CONTROL_HZ
+
+        robot.close()
+
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    def test_airbot_e2b_free_drive_mode_keeps_feedback_alive_without_extra_steps(
+        self,
+        mock_import: MagicMock,
+        mock_airbot_eef_hardware,
+    ) -> None:
+        mock_ah, mock_eef = mock_airbot_eef_hardware
+        mock_import.return_value = (mock_ah, True)
+
+        from rollio.robot.airbot.eef import AIRBOTE2B
 
         robot = AIRBOTE2B(can_interface="can0")
         robot.open()
@@ -1039,7 +1127,7 @@ class TestAIRBOTEEFMocked:
         state = robot.read_joint_state()
 
         assert state.is_valid is True
-        mock_eef.mit.assert_not_called()
+        assert _wait_until(lambda: mock_eef.mit.call_count >= 1)
         mock_eef.ping.assert_not_called()
         robot.close()
 
@@ -1052,7 +1140,7 @@ class TestAIRBOTEEFMocked:
 class TestAIRBOTScanning:
     """Tests for AIRBOT robot scanning."""
     
-    @patch('rollio.robot.airbot_play.scan_airbot_detected_robots')
+    @patch('rollio.robot.airbot.play.scan_airbot_detected_robots')
     def test_airbot_scan(
         self,
         mock_scan: MagicMock,
@@ -1082,7 +1170,7 @@ class TestAIRBOTScanning:
             ),
         ]
         
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         devices = AIRBOTPlay.scan()
         
@@ -1093,21 +1181,21 @@ class TestAIRBOTScanning:
         assert devices[1].device_id == "can1"
         assert "SN:PZ25C0240200" in devices[0].label
     
-    @patch('rollio.robot.airbot_play.scan_airbot_detected_robots', return_value=[])
+    @patch('rollio.robot.airbot.play.scan_airbot_detected_robots', return_value=[])
     def test_airbot_scan_no_device(
         self,
         mock_scan: MagicMock,
     ) -> None:
         """Test scanning when no AIRBOT device responds."""
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         devices = AIRBOTPlay.scan()
         
         # Should find no devices since probe returns False
         assert len(devices) == 0
 
-    @patch("rollio.robot.airbot_eef.scan_airbot_detected_robots")
-    @patch("rollio.robot.airbot_eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.eef.scan_airbot_detected_robots")
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
     def test_airbot_g2_scan_filters_to_eef_entities(
         self,
         mock_import: MagicMock,
@@ -1131,7 +1219,7 @@ class TestAIRBOTScanning:
             ),
         ]
 
-        from rollio.robot.airbot_eef import AIRBOTG2
+        from rollio.robot.airbot.eef import AIRBOTG2
 
         devices = AIRBOTG2.scan()
 
@@ -1141,7 +1229,7 @@ class TestAIRBOTScanning:
     
     def test_airbot_probe_nonexistent(self) -> None:
         """Test probing non-existent interface."""
-        from rollio.robot.airbot_play import AIRBOTPlay
+        from rollio.robot.airbot.play import AIRBOTPlay
         
         # This should return False for non-existent interface
         result = AIRBOTPlay.probe("can_nonexistent_999")
@@ -1164,7 +1252,7 @@ class TestPinocchioKinematics:
         assert isinstance(result, bool)
     
     @pytest.mark.skipif(
-        not pytest.importorskip("pinocchio", reason="pinocchio not installed"),
+        not _pinocchio_available(),
         reason="pinocchio not installed"
     )
     def test_pinocchio_import(self) -> None:
@@ -1188,7 +1276,7 @@ class TestAIRBOTHardware:
     @pytest.fixture
     def robot(self):
         """Create and open an AIRBOT robot."""
-        from rollio.robot.airbot_play import AIRBOTPlay, is_airbot_available
+        from rollio.robot.airbot.play import AIRBOTPlay, is_airbot_available
         
         if not is_airbot_available():
             pytest.skip("airbot_hardware_py not installed")

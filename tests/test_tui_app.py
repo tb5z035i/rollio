@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from rollio.config.schema import CameraConfig, ControlConfig, RollioConfig
+from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.tui import app
 
 
@@ -183,6 +184,28 @@ def test_robot_panel_uses_eef_mm_range() -> None:
     assert "35.0mm" in "\n".join(lines)
 
 
+def test_robot_panel_shows_control_interval_bar() -> None:
+    lines = app._robot_panel_lines(
+        {
+            "leader_arm": {
+                "position": np.array([0.1], dtype=np.float32),
+                "control_loop_interval_ms": np.array([4.2], dtype=np.float32),
+                "control_loop_target_interval_ms": np.array(
+                    [DEFAULT_CONTROL_INTERVAL_MS],
+                    dtype=np.float32,
+                ),
+            },
+        },
+        {"leader_arm": "airbot_play"},
+        panel_w=36,
+        panel_h=10,
+    )
+
+    joined = "\n".join(lines)
+    assert "ctrl" in joined
+    assert "4.2ms" in joined
+
+
 def test_run_collection_renders_camera_name_below_preview(monkeypatch) -> None:
     fake_runtime = _FakeRuntime(
         frames={"cam_main": np.zeros((8, 8, 3), dtype=np.uint8)},
@@ -194,7 +217,7 @@ def test_run_collection_renders_camera_name_below_preview(monkeypatch) -> None:
         robots=[],
     )
 
-    rendered = _run_collection_once(monkeypatch, fake_runtime, ["q"], cfg)
+    rendered = _run_collection_once(monkeypatch, fake_runtime, ["x", "q"], cfg)
 
     assert "[1] cam_main" in rendered
 

@@ -17,6 +17,7 @@ from rollio.config import (
     supports_joint_direct_mapping,
     validate_teleop_pairs,
 )
+from rollio.defaults import DEFAULT_CONTROL_HZ
 from rollio.episode.codecs import get_depth_codec_option, get_rgb_codec_option
 
 
@@ -129,11 +130,11 @@ def test_encoder_config_normalizes_legacy_aliases() -> None:
     assert cfg.depth_codec == "rawvideo"
 
 
-def test_rollio_config_defaults_async_pipeline_to_250_hz() -> None:
+def test_rollio_config_defaults_async_pipeline_to_default_control_hz() -> None:
     cfg = RollioConfig(project_name="demo")
 
-    assert cfg.async_pipeline.telemetry_hz == 250
-    assert cfg.async_pipeline.control_hz == 250
+    assert cfg.async_pipeline.telemetry_hz == DEFAULT_CONTROL_HZ
+    assert cfg.async_pipeline.control_hz == DEFAULT_CONTROL_HZ
 
 
 def test_rollio_config_validates_explicit_pair_references() -> None:
