@@ -82,7 +82,7 @@ class PinocchioKinematicsModel(KinematicsModel):
     
     Args:
         urdf_path: Path to URDF file
-        end_effector_frame: Name of the end-effector frame in the URDF
+        frame_name: Name of the primary task-space frame in the URDF
         mesh_dir: Optional directory containing mesh files (for visualization)
         arm_joints: List of joint names to include (others will be locked).
                    If None, all joints are included.
@@ -91,7 +91,7 @@ class PinocchioKinematicsModel(KinematicsModel):
     def __init__(
         self,
         urdf_path: str | Path,
-        end_effector_frame: str | None = None,
+        frame_name: str | None = None,
         mesh_dir: str | Path | None = None,
         arm_joints: list[str] | None = None,
     ) -> None:
@@ -139,40 +139,40 @@ class PinocchioKinematicsModel(KinematicsModel):
         self._data = self._model.createData()
         self._n_dof = self._model.nq
         
-        # Find end-effector frame
-        if end_effector_frame:
-            if not self._model.existFrame(end_effector_frame):
+        # Find primary task-space frame.
+        if frame_name:
+            if not self._model.existFrame(frame_name):
                 available_frames = [
                     self._model.frames[i].name 
                     for i in range(self._model.nframes)
                 ]
                 raise ValueError(
-                    f"Frame '{end_effector_frame}' not found in URDF. "
+                    f"Frame '{frame_name}' not found in URDF. "
                     f"Available frames: {available_frames}"
                 )
-            self._ee_frame_id = self._model.getFrameId(end_effector_frame)
-            self._ee_frame_name = end_effector_frame
+            self._primary_frame_id = self._model.getFrameId(frame_name)
+            self._primary_frame_name = frame_name
         else:
-            # Try common end-effector frame names
-            for frame_name in ["end_link", "link6", "eef_connect_base_link"]:
-                if self._model.existFrame(frame_name):
-                    self._ee_frame_id = self._model.getFrameId(frame_name)
-                    self._ee_frame_name = frame_name
+            for candidate in ["end_link", "link6", "eef_connect_base_link"]:
+                if self._model.existFrame(candidate):
+                    self._primary_frame_id = self._model.getFrameId(candidate)
+                    self._primary_frame_name = candidate
                     break
             else:
-                # Use the last frame as end-effector
-                self._ee_frame_id = self._model.nframes - 1
-                self._ee_frame_name = self._model.frames[self._ee_frame_id].name
+                self._primary_frame_id = self._model.nframes - 1
+                self._primary_frame_name = self._model.frames[
+                    self._primary_frame_id
+                ].name
         
-        self._end_effector_names = [self._ee_frame_name]
+        self._frame_names = [self._primary_frame_name]
     
     @property
     def n_dof(self) -> int:
         return self._n_dof
     
     @property
-    def end_effector_names(self) -> list[str]:
-        return self._end_effector_names
+    def frame_names(self) -> list[str]:
+        return self._frame_names
     
     @property
     def model(self):
@@ -185,22 +185,22 @@ class PinocchioKinematicsModel(KinematicsModel):
         return self._data
     
     @property
-    def ee_frame_id(self) -> int:
-        """Get the end-effector frame ID."""
-        return self._ee_frame_id
+    def primary_frame_id(self) -> int:
+        """Get the primary task-space frame ID."""
+        return self._primary_frame_id
     
-    def _get_frame_id(self, end_effector: str | None) -> int:
-        """Get frame ID for the given end-effector name."""
-        if end_effector is None:
-            return self._ee_frame_id
-        if not self._model.existFrame(end_effector):
-            raise ValueError(f"Frame '{end_effector}' not found")
-        return self._model.getFrameId(end_effector)
+    def _get_frame_id(self, frame: str | None) -> int:
+        """Get frame ID for the given frame name."""
+        if frame is None:
+            return self._primary_frame_id
+        if not self._model.existFrame(frame):
+            raise ValueError(f"Frame '{frame}' not found")
+        return self._model.getFrameId(frame)
     
     def forward_kinematics(
         self, 
         q: np.ndarray, 
-        end_effector: str | None = None
+        frame: str | None = None
     ) -> Pose:
         """Compute forward kinematics using Pinocchio."""
         q = np.asarray(q, dtype=np.float64)
@@ -209,7 +209,7 @@ class PinocchioKinematicsModel(KinematicsModel):
         self._pin.forwardKinematics(self._model, self._data, q)
         self._pin.updateFramePlacements(self._model, self._data)
         
-        frame_id = self._get_frame_id(end_effector)
+        frame_id = self._get_frame_id(frame)
         oMf = self._data.oMf[frame_id]
         
         # Extract position and rotation matrix
@@ -222,12 +222,12 @@ class PinocchioKinematicsModel(KinematicsModel):
         self,
         target_pose: Pose,
         q_init: np.ndarray | None = None,
-        end_effector: str | None = None,
+        frame: str | None = None,
         max_iterations: int = 100,
         tolerance: float = 1e-6,
     ) -> tuple[np.ndarray | None, bool]:
         """Compute inverse kinematics using iterative Jacobian method."""
-        frame_id = self._get_frame_id(end_effector)
+        frame_id = self._get_frame_id(frame)
         
         if q_init is None:
             q = self._pin.neutral(self._model)
@@ -278,11 +278,11 @@ class PinocchioKinematicsModel(KinematicsModel):
     def jacobian(
         self, 
         q: np.ndarray, 
-        end_effector: str | None = None
+        frame: str | None = None
     ) -> np.ndarray:
         """Compute the geometric Jacobian using Pinocchio."""
         q = np.asarray(q, dtype=np.float64)
-        frame_id = self._get_frame_id(end_effector)
+        frame_id = self._get_frame_id(frame)
         
         # Need to run forward kinematics first
         self._pin.forwardKinematics(self._model, self._data, q)

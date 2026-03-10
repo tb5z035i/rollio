@@ -9,16 +9,54 @@ import numpy as np
 from rollio.robot import Pose, RobotArm
 
 MapperMode = Literal["auto", "joint_direct", "pose_fk_ik"]
+ResolvedMapperMode = Literal["joint_direct", "pose_fk_ik", "noop"]
+
+
+def _direct_map_allowlist(robot: RobotArm) -> set[str]:
+    return {
+        str(item).strip()
+        for item in robot.direct_map_allowlist
+        if str(item).strip()
+    }
+
+
+def supports_joint_direct_runtime(leader: RobotArm, follower: RobotArm) -> bool:
+    """Return True when runtime metadata allows direct mapping."""
+    return (
+        leader.has_position_feedback
+        and follower.has_position_feedback
+        and leader.n_dof == follower.n_dof
+        and follower.info.robot_type in _direct_map_allowlist(leader)
+        and leader.info.robot_type in _direct_map_allowlist(follower)
+    )
+
+
+def supports_pose_fkik_runtime(leader: RobotArm, follower: RobotArm) -> bool:
+    """Return True when a runtime pair should use pose FK/IK."""
+    return (
+        leader.has_frame_pose_feedback
+        and leader.n_dof > 1
+        and follower.n_dof > 1
+    )
 
 
 @dataclass
 class TeleopCommand:
     """A joint-space command generated from a tele-operation mapping."""
 
-    mode: Literal["joint_direct", "pose_fk_ik"]
-    position_target: np.ndarray
-    velocity_target: np.ndarray
+    mode: ResolvedMapperMode
+    position_target: np.ndarray | None
+    velocity_target: np.ndarray | None
     leader_pose: Pose | None = None
+
+    @classmethod
+    def noop(cls) -> "TeleopCommand":
+        return cls(
+            mode="noop",
+            position_target=None,
+            velocity_target=None,
+            leader_pose=None,
+        )
 
 
 class TeleopMapper:
@@ -46,11 +84,14 @@ class JointSpaceDirectMapper(TeleopMapper):
         follower: RobotArm,
         previous_target: np.ndarray | None = None,
     ) -> TeleopCommand:
+        del previous_target
+        if not supports_joint_direct_runtime(leader, follower):
+            return TeleopCommand.noop()
         leader_state = leader.read_joint_state()
         if leader_state.position is None:
-            raise ValueError("Leader does not expose joint positions")
+            return TeleopCommand.noop()
         if follower.n_dof != len(leader_state.position):
-            raise ValueError("Leader/follower DOF mismatch for direct mapping")
+            return TeleopCommand.noop()
 
         velocity = leader_state.velocity
         if velocity is None:
@@ -75,10 +116,12 @@ class PoseSpaceFkIkMapper(TeleopMapper):
         follower: RobotArm,
         previous_target: np.ndarray | None = None,
     ) -> TeleopCommand:
+        if not supports_pose_fkik_runtime(leader, follower):
+            return TeleopCommand.noop()
         leader_joint_state = leader.read_joint_state()
-        leader_ee = leader.read_end_effector_state()
-        if leader_ee.pose is None:
-            raise ValueError("Leader does not expose an end-effector pose")
+        leader_frame = leader.read_frame_state()
+        if leader_frame.pose is None:
+            return TeleopCommand.noop()
 
         if previous_target is None:
             if (
@@ -97,10 +140,13 @@ class PoseSpaceFkIkMapper(TeleopMapper):
                     else np.zeros(follower.n_dof, dtype=np.float64)
                 )
 
-        q_target, success = follower.kinematics.inverse_kinematics(
-            leader_ee.pose,
-            q_init=np.asarray(previous_target, dtype=np.float64),
-        )
+        try:
+            q_target, success = follower.kinematics.inverse_kinematics(
+                leader_frame.pose,
+                q_init=np.asarray(previous_target, dtype=np.float64),
+            )
+        except Exception:
+            return TeleopCommand.noop()
         if not success or q_target is None:
             if (
                 leader_joint_state.position is not None
@@ -114,7 +160,7 @@ class PoseSpaceFkIkMapper(TeleopMapper):
             mode="pose_fk_ik",
             position_target=np.asarray(q_target, dtype=np.float64),
             velocity_target=np.zeros(follower.n_dof, dtype=np.float64),
-            leader_pose=leader_ee.pose,
+            leader_pose=leader_frame.pose,
         )
 
 
@@ -126,15 +172,14 @@ class AutoMapper(TeleopMapper):
     def __init__(self) -> None:
         self._direct = JointSpaceDirectMapper()
         self._pose = PoseSpaceFkIkMapper()
+        self._noop = NoOpMapper()
 
     def resolve(self, leader: RobotArm, follower: RobotArm) -> TeleopMapper:
-        if (
-            leader.has_position_feedback
-            and leader.info.robot_type == follower.info.robot_type
-            and leader.n_dof == follower.n_dof
-        ):
+        if supports_joint_direct_runtime(leader, follower):
             return self._direct
-        return self._pose
+        if supports_pose_fkik_runtime(leader, follower):
+            return self._pose
+        return self._noop
 
     def map_command(
         self,
@@ -144,6 +189,21 @@ class AutoMapper(TeleopMapper):
     ) -> TeleopCommand:
         mapper = self.resolve(leader, follower)
         return mapper.map_command(leader, follower, previous_target)
+
+
+class NoOpMapper(TeleopMapper):
+    """Mapper used for pairs that should not issue follower commands."""
+
+    mode_name: MapperMode = "auto"
+
+    def map_command(
+        self,
+        leader: RobotArm,
+        follower: RobotArm,
+        previous_target: np.ndarray | None = None,
+    ) -> TeleopCommand:
+        del leader, follower, previous_target
+        return TeleopCommand.noop()
 
 
 def build_mapper(mode: MapperMode) -> TeleopMapper:

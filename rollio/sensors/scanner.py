@@ -136,18 +136,17 @@ def scan_robots(
         for robot in robot_scan_robots():
             if robot.robot_type == "pseudo":
                 continue
-            if robot.robot_type == "airbot_play":
-                found.append(DetectedDevice(
-                    kind="robot",
-                    dtype="airbot_play",
-                    device_id=robot.device_id,
-                    label=robot.label,
-                    properties={
-                        "num_joints": robot.n_dof,
-                        "can_interface": robot.properties.get("can_interface"),
-                        **robot.properties,
-                    }
-                ))
+            found.append(DetectedDevice(
+                kind="robot",
+                dtype=robot.robot_type,
+                device_id=robot.device_id,
+                label=robot.label,
+                properties={
+                    "num_joints": robot.n_dof,
+                    "can_interface": robot.properties.get("can_interface"),
+                    **robot.properties,
+                }
+            ))
     except ImportError:
         pass
 

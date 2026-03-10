@@ -6,33 +6,11 @@ cameras:
 - name: cam_0
   type: v4l2
   device: 0
-  width: 1280
-  height: 960
+  width: 640
+  height: 480
   fps: 30
   pixel_format: MJPG
   id_path: pci-0000:f1:00.4-usb-0:2:1.0
-  channel: color
-  options: {}
-  channels: []
-- name: cam_2
-  type: realsense
-  device: 335522070371:depth
-  width: 1280
-  height: 720
-  fps: 30
-  pixel_format: z16
-  id_path: ''
-  channel: depth
-  options: {}
-  channels: []
-- name: cam_3
-  type: realsense
-  device: 335522070371:color
-  width: 1920
-  height: 1080
-  fps: 30
-  pixel_format: bgr8
-  id_path: ''
   channel: color
   options: {}
   channels: []
@@ -42,17 +20,41 @@ robots:
   role: follower
   num_joints: 6
   device: can0
+  direct_map_allowlist:
+  - airbot_play
   options: {}
-- name: arm_1
+- name: eef_g2_1
+  type: airbot_g2
+  role: follower
+  num_joints: 1
+  device: can0
+  direct_map_allowlist:
+  - airbot_e2b
+  options: {}
+- name: arm_2
   type: airbot_play
   role: leader
   num_joints: 6
   device: can1
+  direct_map_allowlist:
+  - airbot_play
+  options: {}
+- name: eef_e2b_3
+  type: airbot_e2b
+  role: leader
+  num_joints: 1
+  device: can1
+  direct_map_allowlist:
+  - airbot_g2
   options: {}
 teleop_pairs:
 - name: pair_0
-  leader: arm_1
+  leader: arm_2
   follower: arm_0
+  mapper: joint_direct
+- name: pair_1
+  leader: eef_e2b_3
+  follower: eef_g2_1
   mapper: joint_direct
 storage:
   root: ~/rollio_data
@@ -67,8 +69,8 @@ upload:
   api_key_env: ''
 async_pipeline:
   export_queue_size: 4
-  telemetry_hz: 50
-  control_hz: 100
+  telemetry_hz: 250
+  control_hz: 250
   max_pending_episodes: 8
   allow_drop_preview_frames: true
 controls:

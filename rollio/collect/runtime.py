@@ -13,13 +13,20 @@ from rollio.config import suggest_teleop_pairs
 from rollio.config.schema import CameraConfig, RollioConfig, TeleopPairConfig
 from rollio.episode.recorder import EpisodeData
 from rollio.episode.writer import LeRobotV21Writer
-from rollio.robot import JointState, RobotArm
+from rollio.robot import ControlMode, JointState, RobotArm
 from rollio.sensors import ImageSensor
 
 from .camera_bridge import FrameSourceMetrics, ThreadedCameraFrameSource
 from .devices import build_cameras_from_config, build_robots_from_config
 from .scheduler import DriverMetrics, ScheduledTask, build_scheduler_driver
-from .teleop import MapperMode, TeleopMapper, build_mapper
+from .teleop import (
+    MapperMode,
+    ResolvedMapperMode,
+    TeleopMapper,
+    build_mapper,
+    supports_joint_direct_runtime,
+    supports_pose_fkik_runtime,
+)
 
 
 @dataclass
@@ -81,6 +88,7 @@ class EpisodeAccumulator:
         robot_names: list[str],
         started_at: float,
         initial_mapper_modes: dict[str, str] | None = None,
+        action_layout: list[dict[str, int | str]] | None = None,
     ) -> None:
         self._episode_index = episode_index
         self._fps = fps
@@ -93,6 +101,11 @@ class EpisodeAccumulator:
             name: [] for name in robot_names
         }
         self._mapper_modes = dict(initial_mapper_modes or {})
+        self._action_layout = [dict(entry) for entry in (action_layout or [])]
+        self._pair_actions: dict[str, list[tuple[float, np.ndarray]]] = {
+            str(entry["pair_name"]): []
+            for entry in self._action_layout
+        }
 
     def append_camera(self, name: str, ts: float, frame: np.ndarray) -> None:
         rel_ts = ts - self._started_at
@@ -116,6 +129,16 @@ class EpisodeAccumulator:
         with self._lock:
             self._mapper_modes[pair_name] = mapper_mode
 
+    def append_pair_action(self, pair_name: str, ts: float, target: np.ndarray) -> None:
+        rel_ts = ts - self._started_at
+        if rel_ts < 0:
+            return
+        if pair_name not in self._pair_actions:
+            return
+        safe_target = np.asarray(target, dtype=np.float32).copy()
+        with self._lock:
+            self._pair_actions[pair_name].append((rel_ts, safe_target))
+
     def freeze(self, stopped_at: float) -> RecordedEpisode:
         duration = max(0.0, stopped_at - self._started_at)
         with self._lock:
@@ -129,6 +152,10 @@ class EpisodeAccumulator:
                 robot_states={
                     key: list(value) for key, value in self._robot_states.items()
                 },
+                pair_actions={
+                    key: list(value) for key, value in self._pair_actions.items()
+                },
+                action_layout=[dict(entry) for entry in self._action_layout],
             )
             mapper_modes = dict(self._mapper_modes)
         return RecordedEpisode(
@@ -237,14 +264,61 @@ def _joint_state_to_robot_state(robot: RobotArm, joint_state: JointState) -> dic
     robot_state: dict[str, np.ndarray] = {}
     if joint_state.position is not None:
         robot_state["position"] = joint_state.position
-        pose = robot.kinematics.forward_kinematics(joint_state.position)
-        robot_state["ee_position"] = pose.position.astype(np.float32)
-        robot_state["ee_quaternion"] = pose.quaternion.astype(np.float32)
+        try:
+            pose = robot.kinematics.forward_kinematics(joint_state.position)
+        except Exception:
+            pose = None
+        if pose is not None:
+            robot_state["ee_position"] = pose.position.astype(np.float32)
+            robot_state["ee_quaternion"] = pose.quaternion.astype(np.float32)
     if joint_state.velocity is not None:
         robot_state["velocity"] = joint_state.velocity
     if joint_state.effort is not None:
         robot_state["effort"] = joint_state.effort
     return robot_state
+
+
+def _resolve_pair_mode(pair: TeleopPairBinding) -> ResolvedMapperMode:
+    if pair.mapper_mode == "joint_direct":
+        return "joint_direct" if supports_joint_direct_runtime(pair.leader, pair.follower) else "noop"
+    if pair.mapper_mode == "pose_fk_ik":
+        return "pose_fk_ik" if supports_pose_fkik_runtime(pair.leader, pair.follower) else "noop"
+    if supports_joint_direct_runtime(pair.leader, pair.follower):
+        return "joint_direct"
+    if supports_pose_fkik_runtime(pair.leader, pair.follower):
+        return "pose_fk_ik"
+    return "noop"
+
+
+def _build_action_layout(
+    pairs: list[TeleopPairBinding],
+) -> list[dict[str, int | str]]:
+    layout: list[dict[str, int | str]] = []
+    start = 0
+    for pair in pairs:
+        resolved_mode = _resolve_pair_mode(pair)
+        if resolved_mode == "noop":
+            continue
+        dim = pair.follower.n_dof
+        layout.append({
+            "pair_name": pair.name,
+            "leader": pair.leader_name,
+            "follower": pair.follower_name,
+            "mode": resolved_mode,
+            "start": start,
+            "stop": start + dim,
+            "dim": dim,
+        })
+        start += dim
+    return layout
+
+
+def _preview_control_mode(robot: RobotArm) -> ControlMode | None:
+    return robot.preview_control_mode
+
+
+def _requires_preview_keepalive(robot: RobotArm) -> bool:
+    return robot.preview_requires_keepalive
 
 
 class CameraIngestTask:
@@ -290,11 +364,14 @@ class RobotTelemetryTask:
         robot: RobotArm,
         hz: int,
         runtime: "AsyncCollectionRuntime",
+        *,
+        preview_keepalive: bool = False,
     ) -> None:
         self._robot_name = robot_name
         self._robot = robot
         self._interval_sec = 1.0 / max(hz, 1)
         self._runtime = runtime
+        self._preview_keepalive = preview_keepalive
 
     def scheduled_task(self) -> ScheduledTask:
         return ScheduledTask(
@@ -304,7 +381,27 @@ class RobotTelemetryTask:
         )
 
     def step(self) -> None:
+        if (
+            self._runtime._preview_live_feedback  # noqa: SLF001
+            and self._robot.control_mode == ControlMode.FREE_DRIVE
+        ):
+            self._robot.step_free_drive()
         joint_state = self._robot.read_joint_state()
+        if (
+            self._preview_keepalive
+            and joint_state.is_valid
+            and joint_state.position is not None
+        ):
+            velocity_target = (
+                np.asarray(joint_state.velocity, dtype=np.float64)
+                if joint_state.velocity is not None
+                else np.zeros_like(joint_state.position, dtype=np.float64)
+            )
+            self._robot.step_target_tracking(
+                position_target=np.asarray(joint_state.position, dtype=np.float64),
+                velocity_target=velocity_target,
+                add_gravity_compensation=False,
+            )
         robot_state = _joint_state_to_robot_state(self._robot, joint_state)
         self._runtime.update_latest_robot_state(self._robot_name, robot_state)
         self._runtime.record_robot_state(
@@ -345,8 +442,15 @@ class TeleopTask:
             self._pair.follower,
             previous_target=self._last_target,
         )
-        self._last_target = command.position_target
         self._runtime.update_pair_mode(self._pair.name, command.mode)
+        if command.position_target is None or command.velocity_target is None:
+            return
+        self._last_target = command.position_target
+        self._runtime.record_pair_action(
+            self._pair.name,
+            time.monotonic(),
+            command.position_target,
+        )
         self._pair.follower.step_target_tracking(
             position_target=command.position_target,
             velocity_target=command.velocity_target,
@@ -372,11 +476,12 @@ class AsyncCollectionRuntime:
         depth_codec: str,
         lerobot_version: str = "v2.1",
         export_queue_size: int = 4,
-        telemetry_hz: int = 50,
-        control_hz: int = 100,
+        telemetry_hz: int = 250,
+        control_hz: int = 250,
         export_delay_sec: float = 0.0,
         scheduler_driver: str = "asyncio",
         camera_queue_size: int = 4,
+        preview_live_feedback: bool = False,
     ) -> None:
         self._cameras = cameras
         self._camera_configs = camera_configs
@@ -389,10 +494,12 @@ class AsyncCollectionRuntime:
         self._control_hz = control_hz
         self._scheduler_driver_name = scheduler_driver
         self._camera_queue_size = max(1, camera_queue_size)
+        self._preview_live_feedback = preview_live_feedback
         self._state_lock = threading.Lock()
         self._current_episode: EpisodeAccumulator | None = None
         self._pending_episode: RecordedEpisode | None = None
         self._episode_index = 0
+        self._action_layout = _build_action_layout(teleop_pairs)
         self._latest_frames: dict[str, np.ndarray | None] = {
             name: None for name in cameras
         }
@@ -400,6 +507,7 @@ class AsyncCollectionRuntime:
             name: {} for name in robots
         }
         self._latest_pair_modes: dict[str, str] = {}
+        self._preview_keepalive_names: set[str] = set()
         self._frame_sources: dict[str, ThreadedCameraFrameSource] = {}
         self._scheduler = None
         self._opened = False
@@ -422,6 +530,7 @@ class AsyncCollectionRuntime:
         export_delay_sec: float = 0.0,
         *,
         scheduler_driver: str = "asyncio",
+        preview_live_feedback: bool = False,
     ) -> "AsyncCollectionRuntime":
         cameras = build_cameras_from_config(cfg)
         robots = build_robots_from_config(cfg)
@@ -446,6 +555,7 @@ class AsyncCollectionRuntime:
             export_delay_sec=export_delay_sec,
             scheduler_driver=scheduler_driver,
             camera_queue_size=camera_queue_size,
+            preview_live_feedback=preview_live_feedback,
         )
 
     @property
@@ -474,6 +584,14 @@ class AsyncCollectionRuntime:
     def scheduler_driver(self) -> str:
         return self._scheduler_driver_name
 
+    @property
+    def telemetry_hz(self) -> int:
+        return self._telemetry_hz
+
+    @property
+    def control_hz(self) -> int:
+        return self._control_hz
+
     def open(self) -> None:
         if self._opened:
             return
@@ -481,9 +599,30 @@ class AsyncCollectionRuntime:
         for robot in self._robots.values():
             robot.open()
             robot.enable()
+        self._preview_keepalive_names.clear()
+        paired_robot_names = {
+            pair.leader_name
+            for pair in self._teleop_pairs
+        } | {
+            pair.follower_name
+            for pair in self._teleop_pairs
+        }
         for pair in self._teleop_pairs:
             pair.leader.enter_free_drive()
             pair.follower.enter_target_tracking()
+        if self._preview_live_feedback:
+            for name, robot in self._robots.items():
+                if name in paired_robot_names:
+                    continue
+                preview_mode = _preview_control_mode(robot)
+                if preview_mode == ControlMode.FREE_DRIVE:
+                    entered = robot.enter_free_drive()
+                elif preview_mode == ControlMode.TARGET_TRACKING:
+                    entered = robot.enter_target_tracking()
+                else:
+                    entered = False
+                if entered and _requires_preview_keepalive(robot):
+                    self._preview_keepalive_names.add(name)
 
         self._frame_sources = {
             name: ThreadedCameraFrameSource(
@@ -517,7 +656,18 @@ class AsyncCollectionRuntime:
             robot.disable()
             robot.close()
 
+        self._preview_keepalive_names.clear()
         self._opened = False
+
+    def return_robots_to_zero(self, timeout: float = 10.0) -> dict[str, bool]:
+        """Request all runtime robots to return to zero when supported."""
+        results: dict[str, bool] = {}
+        for name, robot in self._robots.items():
+            try:
+                results[name] = bool(robot.move_to_zero(timeout=timeout))
+            except Exception:
+                results[name] = False
+        return results
 
     def _build_scheduled_tasks(self) -> list[ScheduledTask]:
         tasks: list[ScheduledTask] = []
@@ -526,7 +676,13 @@ class AsyncCollectionRuntime:
             for pair in self._teleop_pairs
         )
         tasks.extend(
-            RobotTelemetryTask(name, robot, self._telemetry_hz, self).scheduled_task()
+            RobotTelemetryTask(
+                name,
+                robot,
+                self._telemetry_hz,
+                self,
+                preview_keepalive=name in self._preview_keepalive_names,
+            ).scheduled_task()
             for name, robot in self._robots.items()
         )
         tasks.extend(
@@ -547,6 +703,7 @@ class AsyncCollectionRuntime:
                 robot_names=list(self._robots.keys()),
                 started_at=started_at,
                 initial_mapper_modes=self._latest_pair_modes,
+                action_layout=self._action_layout,
             )
             latest_frames = {
                 name: frame.copy() if frame is not None else None
@@ -628,6 +785,10 @@ class AsyncCollectionRuntime:
         with self._state_lock:
             return dict(self._latest_pair_modes)
 
+    def action_layout(self) -> list[dict[str, int | str]]:
+        with self._state_lock:
+            return [dict(entry) for entry in self._action_layout]
+
     def scheduler_metrics(self) -> dict[str, DriverMetrics | dict[str, FrameSourceMetrics]]:
         driver_metrics = (
             self._scheduler.metrics()
@@ -671,6 +832,12 @@ class AsyncCollectionRuntime:
             episode = self._current_episode
         if episode is not None:
             episode.append_robot(name, ts, state)
+
+    def record_pair_action(self, pair_name: str, ts: float, target: np.ndarray) -> None:
+        with self._state_lock:
+            episode = self._current_episode
+        if episode is not None:
+            episode.append_pair_action(pair_name, ts, target)
 
 
 def build_teleop_pairs_from_config(

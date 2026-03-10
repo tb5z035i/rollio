@@ -1,7 +1,7 @@
 """Abstract base classes for robot arms.
 
 This module defines the core abstractions for robot arm control, including:
-- State representations (joint states, end-effector states)
+- State representations (joint states, task-space frame states)
 - Control modes (free drive, target tracking)
 - Kinematics interfaces (FK, IK, Jacobian, inverse dynamics)
 - Robot arm interface with feedback and control capabilities
@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 class ControlMode(Enum):
     """Supported robot control modes."""
     DISABLED = auto()       # Robot is disabled, no control
-    FREE_DRIVE = auto()     # Gravity-compensated free drive (admittance control)
-    TARGET_TRACKING = auto()  # MIT-style PD control with feedforward
+    FREE_DRIVE = auto()     # Backend-native operator-guided or keepalive mode
+    TARGET_TRACKING = auto()  # Backend-native target-tracking mode
 
 
 class FeedbackCapability(Enum):
@@ -37,9 +37,9 @@ class FeedbackCapability(Enum):
     POSITION = auto()
     VELOCITY = auto()
     EFFORT = auto()
-    END_POSE = auto()
-    END_TWIST = auto()
-    END_WRENCH = auto()
+    FRAME_POSE = auto()
+    FRAME_TWIST = auto()
+    FRAME_WRENCH = auto()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -222,8 +222,8 @@ class Wrench:
 
 
 @dataclass
-class EndEffectorState:
-    """State of an end-effector at a given timestamp."""
+class FrameState:
+    """State of a task-space frame at a given timestamp."""
     name: str                           # e.g., "gripper", "left_hand"
     timestamp: float
     pose: Pose | None = None            # Current pose
@@ -236,7 +236,7 @@ class RobotState:
     """Complete robot state at a given timestamp."""
     timestamp: float
     joint_state: JointState
-    end_effectors: list[EndEffectorState] = field(default_factory=list)
+    frames: list[FrameState] = field(default_factory=list)
     control_mode: ControlMode = ControlMode.DISABLED
     is_valid: bool = True
 
@@ -248,11 +248,10 @@ class RobotState:
 
 @dataclass
 class TargetTrackingCommand:
-    """Command for target tracking (MIT) mode.
-    
-    MIT control law: tau = kp * (q_target - q) + kd * (qd_target - qd) + ff
-    
-    All arrays have shape (n_dof,).
+    """Command for target tracking mode.
+
+    Backends may interpret these fields using MIT control, PVT, or another
+    backend-native target-tracking mode. All arrays have shape ``(n_dof,)``.
     """
     position_target: np.ndarray      # rad - target joint positions
     velocity_target: np.ndarray      # rad/s - target joint velocities
@@ -272,11 +271,11 @@ class TargetTrackingCommand:
 @dataclass
 class FreeDriveCommand:
     """Command for free drive mode.
-    
-    In free drive mode, the robot compensates for gravity and optionally
-    applies an external wrench transformed to joint torques via Jacobian.
+
+    Backends may interpret this as gravity-compensated hand guiding, a
+    vendor-specific feedback keepalive, or another operator-guided mode.
     """
-    external_wrench: Wrench | None = None  # External wrench at end-effector
+    external_wrench: Wrench | None = None  # External wrench at the active frame
     gravity_compensation_scale: float = 1.0  # Scale factor for gravity comp
 
 
@@ -321,8 +320,8 @@ class KinematicsModel(ABC):
 
     @property
     @abstractmethod
-    def end_effector_names(self) -> list[str]:
-        """Names of all end-effectors."""
+    def frame_names(self) -> list[str]:
+        """Names of all task-space frames exposed by this model."""
         ...
 
     # ── Forward Kinematics ────────────────────────────────────────────────
@@ -331,31 +330,31 @@ class KinematicsModel(ABC):
     def forward_kinematics(
         self, 
         q: np.ndarray, 
-        end_effector: str | None = None
+        frame: str | None = None
     ) -> Pose:
-        """Compute end-effector pose given joint positions.
+        """Compute frame pose given joint positions.
         
         Args:
             q: Joint positions (n_dof,)
-            end_effector: Name of end-effector (None for default/first)
+            frame: Name of the target frame (None for default/first)
             
         Returns:
-            Pose of the end-effector
+            Pose of the target frame
         """
         ...
 
     def forward_kinematics_all(self, q: np.ndarray) -> dict[str, Pose]:
-        """Compute poses for all end-effectors.
+        """Compute poses for all task-space frames.
         
         Args:
             q: Joint positions (n_dof,)
             
         Returns:
-            Dict mapping end-effector names to their poses
+            Dict mapping frame names to their poses
         """
         return {
             name: self.forward_kinematics(q, name) 
-            for name in self.end_effector_names
+            for name in self.frame_names
         }
 
     # ── Inverse Kinematics ────────────────────────────────────────────────
@@ -365,16 +364,16 @@ class KinematicsModel(ABC):
         self,
         target_pose: Pose,
         q_init: np.ndarray | None = None,
-        end_effector: str | None = None,
+        frame: str | None = None,
         max_iterations: int = 100,
         tolerance: float = 1e-6,
     ) -> tuple[np.ndarray | None, bool]:
-        """Compute joint positions for desired end-effector pose.
+        """Compute joint positions for a desired frame pose.
         
         Args:
-            target_pose: Desired end-effector pose
+            target_pose: Desired frame pose
             q_init: Initial guess for joint positions
-            end_effector: Name of end-effector
+            frame: Name of the target frame
             max_iterations: Maximum solver iterations
             tolerance: Convergence tolerance
             
@@ -389,16 +388,16 @@ class KinematicsModel(ABC):
     def jacobian(
         self, 
         q: np.ndarray, 
-        end_effector: str | None = None
+        frame: str | None = None
     ) -> np.ndarray:
         """Compute the geometric Jacobian at given configuration.
         
-        The Jacobian maps joint velocities to end-effector twist:
-            v_ee = J @ q_dot
+        The Jacobian maps joint velocities to frame twist:
+            v_frame = J @ q_dot
         
         Args:
             q: Joint positions (n_dof,)
-            end_effector: Name of end-effector
+            frame: Name of the target frame
             
         Returns:
             Jacobian matrix (6, n_dof)
@@ -408,14 +407,14 @@ class KinematicsModel(ABC):
     def jacobian_transpose(
         self, 
         q: np.ndarray, 
-        end_effector: str | None = None
+        frame: str | None = None
     ) -> np.ndarray:
         """Compute transpose of Jacobian (for force transformation).
         
-        Maps end-effector wrench to joint torques:
+        Maps frame wrench to joint torques:
             tau = J^T @ F
         """
-        return self.jacobian(q, end_effector).T
+        return self.jacobian(q, frame).T
 
     # ── Inverse Dynamics ──────────────────────────────────────────────────
 
@@ -456,21 +455,21 @@ class KinematicsModel(ABC):
         self,
         q: np.ndarray,
         wrench: Wrench,
-        end_effector: str | None = None,
+        frame: str | None = None,
     ) -> np.ndarray:
-        """Transform end-effector wrench to joint torques via Jacobian transpose.
+        """Transform a frame wrench to joint torques via Jacobian transpose.
         
         tau = J^T @ F
         
         Args:
             q: Joint positions (n_dof,)
-            wrench: External wrench at end-effector
-            end_effector: Name of end-effector
+            wrench: External wrench at the target frame
+            frame: Name of the target frame
             
         Returns:
             Joint torques (n_dof,)
         """
-        J_T = self.jacobian_transpose(q, end_effector)
+        J_T = self.jacobian_transpose(q, frame)
         return J_T @ wrench.as_vector()
 
 
@@ -484,7 +483,7 @@ class RobotArm(ABC):
     
     A robot arm provides:
     - Joint state feedback (position, velocity, effort)
-    - End-effector state feedback (pose, twist, wrench)
+    - Task-space frame state feedback (pose, twist, wrench)
     - Multiple control modes (free drive, target tracking)
     - Kinematics computations via an associated KinematicsModel
     
@@ -496,6 +495,51 @@ class RobotArm(ABC):
     # ── Class-level type identifier ───────────────────────────────────────
 
     ROBOT_TYPE: ClassVar[str] = "unknown"  # Override in subclasses
+    DIRECT_MAP_ALLOWLIST: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def default_direct_map_allowlist(
+        cls,
+        robot_type: str | None = None,
+        role: Literal["leader", "follower"] | str | None = None,
+    ) -> tuple[str, ...]:
+        """Return the class-defined direct-mapping allowlist.
+
+        Subclasses can override ``DIRECT_MAP_ALLOWLIST`` when they support
+        direct mapping to a different robot type than themselves. Backends
+        without an explicit allowlist default to same-type mapping.
+        """
+        del role
+        raw = cls.DIRECT_MAP_ALLOWLIST
+        if not raw:
+            fallback = str(robot_type or cls.ROBOT_TYPE).strip()
+            if fallback and fallback != "unknown":
+                raw = (fallback,)
+        return tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in raw
+                if str(item).strip()
+            )
+        )
+
+    @classmethod
+    def default_preview_control_mode(
+        cls,
+        role: Literal["leader", "follower"] | str | None = None,
+    ) -> ControlMode | None:
+        """Return the preferred preview mode for one configured role."""
+        del role
+        return None
+
+    @classmethod
+    def default_preview_keepalive(
+        cls,
+        role: Literal["leader", "follower"] | str | None = None,
+    ) -> bool:
+        """Return whether preview should send a keepalive after each read."""
+        del role
+        return False
 
     # ── Factory / scanning class methods ──────────────────────────────────
 
@@ -554,6 +598,24 @@ class RobotArm(ABC):
         """
         return {}
 
+    @property
+    def direct_map_allowlist(self) -> tuple[str, ...]:
+        """Robot types this instance can direct-map to at runtime."""
+        role = self.info.properties.get("config_role")
+        return type(self).default_direct_map_allowlist(self.info.robot_type, role)
+
+    @property
+    def preview_control_mode(self) -> ControlMode | None:
+        """Preferred preview mode for this configured robot instance."""
+        role = self.info.properties.get("config_role")
+        return type(self).default_preview_control_mode(role)
+
+    @property
+    def preview_requires_keepalive(self) -> bool:
+        """Whether preview should send a keepalive command after state reads."""
+        role = self.info.properties.get("config_role")
+        return type(self).default_preview_keepalive(role)
+
     def query_properties(self) -> dict[str, Any]:
         """Query and update robot properties from hardware.
         
@@ -602,19 +664,19 @@ class RobotArm(ABC):
         return FeedbackCapability.EFFORT in self.info.feedback_capabilities
 
     @property
-    def has_end_pose_feedback(self) -> bool:
-        """Whether end-effector pose feedback is available."""
-        return FeedbackCapability.END_POSE in self.info.feedback_capabilities
+    def has_frame_pose_feedback(self) -> bool:
+        """Whether task-space frame pose feedback is available."""
+        return FeedbackCapability.FRAME_POSE in self.info.feedback_capabilities
 
     @property
-    def has_end_twist_feedback(self) -> bool:
-        """Whether end-effector twist feedback is available."""
-        return FeedbackCapability.END_TWIST in self.info.feedback_capabilities
+    def has_frame_twist_feedback(self) -> bool:
+        """Whether task-space frame twist feedback is available."""
+        return FeedbackCapability.FRAME_TWIST in self.info.feedback_capabilities
 
     @property
-    def has_end_wrench_feedback(self) -> bool:
-        """Whether end-effector wrench feedback is available (F/T sensor)."""
-        return FeedbackCapability.END_WRENCH in self.info.feedback_capabilities
+    def has_frame_wrench_feedback(self) -> bool:
+        """Whether task-space frame wrench feedback is available."""
+        return FeedbackCapability.FRAME_WRENCH in self.info.feedback_capabilities
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -649,40 +711,39 @@ class RobotArm(ABC):
         """Read current joint state (position, velocity, effort)."""
         ...
 
-    def read_end_effector_state(
+    def read_frame_state(
         self, 
-        end_effector: str | None = None
-    ) -> EndEffectorState:
-        """Read current end-effector state.
+        frame: str | None = None
+    ) -> FrameState:
+        """Read current task-space frame state.
         
         Default implementation computes pose/twist from joint state via FK.
-        Override for robots with direct end-effector sensing (e.g., F/T sensor).
+        Override for robots with direct frame sensing (e.g., F/T sensor).
         """
         joint_state = self.read_joint_state()
         
-        # Get end-effector name
-        ee_names = self.kinematics.end_effector_names
-        if end_effector is None:
-            end_effector = ee_names[0] if ee_names else "end_effector"
+        frame_names = self.kinematics.frame_names
+        if frame is None:
+            frame = frame_names[0] if frame_names else "frame"
         
         pose = None
         twist = None
         
         if joint_state.position is not None:
             pose = self.kinematics.forward_kinematics(
-                joint_state.position, end_effector
+                joint_state.position, frame
             )
             
             if joint_state.velocity is not None:
-                J = self.kinematics.jacobian(joint_state.position, end_effector)
+                J = self.kinematics.jacobian(joint_state.position, frame)
                 twist_vec = J @ joint_state.velocity
                 twist = Twist(
                     linear=twist_vec[:3],
                     angular=twist_vec[3:]
                 )
         
-        return EndEffectorState(
-            name=end_effector,
+        return FrameState(
+            name=frame,
             timestamp=joint_state.timestamp,
             pose=pose,
             twist=twist,
@@ -693,16 +754,15 @@ class RobotArm(ABC):
         """Read complete robot state."""
         joint_state = self.read_joint_state()
         
-        # Compute end-effector states for all end-effectors
-        end_effector_states = []
-        for ee_name in self.kinematics.end_effector_names:
-            ee_state = self.read_end_effector_state(ee_name)
-            end_effector_states.append(ee_state)
+        frame_states = []
+        for frame_name in self.kinematics.frame_names:
+            frame_state = self.read_frame_state(frame_name)
+            frame_states.append(frame_state)
         
         return RobotState(
             timestamp=joint_state.timestamp,
             joint_state=joint_state,
-            end_effectors=end_effector_states,
+            frames=frame_states,
             control_mode=self.control_mode,
             is_valid=joint_state.is_valid
         )
@@ -724,27 +784,15 @@ class RobotArm(ABC):
     # ── Free Drive Mode ───────────────────────────────────────────────────
 
     def enter_free_drive(self) -> bool:
-        """Enter free drive (gravity-compensated) mode.
-        
-        In this mode, the robot compensates for gravity so the user
-        can manually guide the arm.
-        
-        Returns:
-            True if successfully entered free drive mode
-        """
+        """Enter the backend's free-drive or operator-guided mode."""
         return self.set_control_mode(ControlMode.FREE_DRIVE)
 
     @abstractmethod
     def command_free_drive(self, cmd: FreeDriveCommand) -> None:
         """Send a free drive command.
         
-        The robot will:
-        1. Compute gravity compensation torques via inverse dynamics
-        2. If external wrench is provided, transform it to joint torques via Jacobian
-        3. Apply the combined torques
-        
         Args:
-            cmd: Free drive command with optional external wrench
+            cmd: Backend-specific free-drive command
         """
         ...
 
@@ -768,24 +816,15 @@ class RobotArm(ABC):
     # ── Target Tracking Mode (MIT Mode) ───────────────────────────────────
 
     def enter_target_tracking(self) -> bool:
-        """Enter target tracking (MIT) mode.
-        
-        In this mode, the robot tracks position/velocity targets using
-        PD control with feedforward: tau = kp*(q_target - q) + kd*(qd_target - qd) + ff
-        
-        Returns:
-            True if successfully entered target tracking mode
-        """
+        """Enter the backend's target-tracking mode."""
         return self.set_control_mode(ControlMode.TARGET_TRACKING)
 
     @abstractmethod
     def command_target_tracking(self, cmd: TargetTrackingCommand) -> None:
         """Send a target tracking command.
         
-        The robot will compute: tau = kp*(q_target - q) + kd*(qd_target - qd) + ff
-        
         Args:
-            cmd: Target tracking command with targets and gains
+            cmd: Backend-specific target-tracking command
         """
         ...
 
@@ -892,6 +931,20 @@ class RobotArm(ABC):
         
         return False
 
+    def move_to_zero(
+        self,
+        timeout: float = 10.0,
+        tolerance: float = 0.01,
+        dt: float = 0.004,
+    ) -> bool:
+        """Move the robot to an all-zero joint configuration when supported."""
+        return self.move_to_position(
+            np.zeros(self.n_dof, dtype=np.float64),
+            tolerance=tolerance,
+            timeout=timeout,
+            dt=dt,
+        )
+
     # ── Identification ────────────────────────────────────────────────────
 
     def identify_start(self) -> bool:
@@ -905,6 +958,10 @@ class RobotArm(ABC):
         """
         # Default implementation does nothing
         return False
+
+    def identify_step(self) -> None:
+        """Advance any robot-specific identification behavior."""
+        return None
 
     def identify_stop(self) -> bool:
         """Stop visual identification of this robot.

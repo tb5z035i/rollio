@@ -1,4 +1,4 @@
-"""Robot scanner — detect available robot arms."""
+"""Robot scanner — detect available robot entities."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,20 +22,10 @@ class DetectedRobot:
 
 
 def _get_robot_classes() -> list[type["RobotArm"]]:
-    """Return all registered robot arm classes."""
+    """Return robot classes that should be scanned directly."""
     from rollio.robot.pseudo_robot import PseudoRobotArm
 
-    classes: list[type["RobotArm"]] = [PseudoRobotArm]
-    
-    # Add AIRBOT if available
-    try:
-        from rollio.robot.airbot_play import AIRBOTPlay, is_airbot_available
-        if is_airbot_available():
-            classes.append(AIRBOTPlay)
-    except ImportError:
-        pass
-    
-    return classes
+    return [PseudoRobotArm]
 
 
 def scan_robots() -> list[DetectedRobot]:
@@ -52,5 +42,12 @@ def scan_robots() -> list[DetectedRobot]:
             found.extend(devices)
         except Exception:
             pass
+
+    try:
+        from rollio.robot.airbot_shared import scan_airbot_detected_robots
+
+        found.extend(scan_airbot_detected_robots())
+    except ImportError:
+        pass
 
     return found

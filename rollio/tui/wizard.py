@@ -11,6 +11,7 @@ import select
 import signal
 import sys
 import termios
+import threading
 import time
 import tty
 
@@ -55,6 +56,7 @@ MAPPER_OPTIONS: tuple[tuple[str, str], ...] = (
 # ── Sync output ────────────────────────────────────────────────────────
 _SY_S = b"\x1b[?2026h"
 _SY_E = b"\x1b[?2026l"
+_LOADING_FRAMES = ("|", "/", "-", "\\")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -93,15 +95,51 @@ class _Term:
         self.cols = max(cols, 40)
         self.rows = max(rows, 10)
 
+    def _read_ready_char(self, timeout: float) -> str | None:
+        if select.select([sys.stdin], [], [], timeout)[0]:
+            return sys.stdin.read(1)
+        return None
+
+    def _decode_key(self, first_char: str, sequence_timeout: float = 0.02) -> str:
+        if first_char != "\x1b":
+            return first_char
+
+        sequence = first_char
+        while True:
+            timeout = sequence_timeout if len(sequence) == 1 else 0.002
+            extra = self._read_ready_char(timeout)
+            if extra is None:
+                break
+            sequence += extra
+            if sequence.startswith("\x1b[") or sequence.startswith("\x1bO"):
+                if extra.isalpha() or extra == "~":
+                    break
+            elif len(sequence) > 1:
+                break
+
+        if sequence == "\x1b":
+            return "\x1b"
+        if sequence.startswith("\x1b[") or sequence.startswith("\x1bO"):
+            final = sequence[-1]
+            if final == "A":
+                return "UP"
+            if final == "B":
+                return "DOWN"
+            if final == "C":
+                return "RIGHT"
+            if final == "D":
+                return "LEFT"
+        return sequence
+
     def read_key(self) -> str | None:
         if select.select([sys.stdin], [], [], 0)[0]:
             ch = sys.stdin.read(1)
-            return ch
+            return self._decode_key(ch)
         return None
 
     def read_key_blocking(self, timeout: float = 0.05) -> str | None:
         if select.select([sys.stdin], [], [], timeout)[0]:
-            return sys.stdin.read(1)
+            return self._decode_key(sys.stdin.read(1))
         return None
 
 
@@ -184,6 +222,22 @@ def _make_robot(dev: DetectedDevice) -> PseudoRobot | None:
     return None
 
 
+def _default_robot_name(dtype: str, index: int) -> str:
+    prefix = {
+        "airbot_play": "arm",
+        "airbot_e2b": "eef_e2b",
+        "airbot_g2": "eef_g2",
+        "pseudo": "arm",
+    }.get(dtype, "robot")
+    return f"{prefix}_{index}"
+
+
+def _default_robot_role(dtype: str) -> str:
+    if dtype == "airbot_e2b":
+        return "leader"
+    return "follower"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  Wizard screens
 # ═══════════════════════════════════════════════════════════════════════
@@ -196,6 +250,115 @@ def _draw_header(out, W: int, step: int, total: int, title: str):
 
 def _draw_text(out, row: int, col: int, text: str):
     out.write(f"\x1b[{row};{col}H{text}\x1b[0m".encode())
+
+
+def _draw_loading_screen(
+    term: _Term,
+    out,
+    *,
+    step: int,
+    total: int,
+    title: str,
+    message: str,
+    frame_idx: int,
+) -> None:
+    W = term.cols
+    spinner = _LOADING_FRAMES[frame_idx % len(_LOADING_FRAMES)]
+    out.write(_SY_S + b"\x1b[2J")
+    _draw_header(out, W, step, total, f"{title} {spinner}")
+    _draw_text(out, 4, 2, message)
+    out.write(_SY_E)
+    out.flush()
+
+
+def _show_loading_transition(
+    term: _Term,
+    out,
+    *,
+    step: int,
+    total: int,
+    title: str,
+    message: str,
+    duration: float = 0.3,
+) -> None:
+    end_time = time.monotonic() + max(0.0, duration)
+    frame_idx = 0
+    while True:
+        _draw_loading_screen(
+            term,
+            out,
+            step=step,
+            total=total,
+            title=title,
+            message=message,
+            frame_idx=frame_idx,
+        )
+        if time.monotonic() >= end_time:
+            return
+        frame_idx += 1
+        time.sleep(0.08)
+
+
+def _run_with_loading(
+    term: _Term,
+    out,
+    *,
+    step: int,
+    total: int,
+    title: str,
+    message: str,
+    work,
+):
+    result: dict[str, object] = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            result["value"] = work()
+        except BaseException as exc:  # pragma: no cover - UI helper
+            result["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_worker, name="rollio-wizard-loading", daemon=True)
+    thread.start()
+
+    frame_idx = 0
+    while True:
+        _draw_loading_screen(
+            term,
+            out,
+            step=step,
+            total=total,
+            title=title,
+            message=message,
+            frame_idx=frame_idx,
+        )
+        if done.wait(0.08):
+            break
+        frame_idx += 1
+
+    thread.join()
+    if "error" in result:
+        raise result["error"]  # type: ignore[misc]
+    return result.get("value")
+
+
+def _format_joint_preview(dtype: str, value: float) -> tuple[str, float]:
+    if dtype in {"airbot_e2b", "airbot_g2"}:
+        frac = float(np.clip(value / 0.10, 0.0, 1.0))
+        return f"{value * 1000.0:6.1f}mm", frac
+    frac = float(np.clip((value + 2.0) / 4.0, 0.0, 1.0))
+    return f"{value:+6.2f}", frac
+
+
+def _airbot_led_block(blink_on: bool | None = None, width: int = 18) -> str:
+    """Render the AIRBOT identification LED as a blinking orange block."""
+    if blink_on is None:
+        blink_on = (time.monotonic() * 4.0) % 1.0 < 0.5
+    if blink_on:
+        return f"\x1b[5m\x1b[48;5;208m{' ' * width}\x1b[0m"
+    return f"\x1b[48;5;236m{' ' * width}\x1b[0m"
 
 
 def _wait_for_keypress(term: _Term) -> str:
@@ -269,7 +432,7 @@ def _prompt_line(term: _Term, out, row: int, col: int,
         elif key == "\x7f" or key == "\x08":  # Backspace
             if buf:
                 buf.pop()
-        elif key.isprintable():
+        elif len(key) == 1 and key.isprintable():
             buf.append(key)
 
 
@@ -294,7 +457,7 @@ def _pick_format(term: _Term, out, formats: list[CameraFormat],
 
         # Instructions
         _draw_text(buf, 3, 2,
-                   f"Enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel")
+                   f"Use ↑/↓, or enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel")
         _draw_text(buf, 4, 2,
                    f"Input: \x1b[1;97m{input_buf}\x1b[5m_\x1b[0m")
 
@@ -329,9 +492,17 @@ def _pick_format(term: _Term, out, formats: list[CameraFormat],
                         return sel
                 except ValueError:
                     pass
+            else:
+                return current_idx
             input_buf = ""  # Clear on invalid
         elif key == "\x7f" or key == "\x08":  # Backspace
             input_buf = input_buf[:-1]
+        elif key == "UP" or key == "LEFT":
+            input_buf = ""
+            current_idx = max(0, current_idx - 1)
+        elif key == "DOWN" or key == "RIGHT":
+            input_buf = ""
+            current_idx = min(len(formats) - 1, current_idx + 1)
         elif key.isdigit():
             input_buf += key
 
@@ -348,13 +519,12 @@ def _pick_resolution(term: _Term, out, modes: list[CameraMode],
                           key=lambda m: (m.width * m.height, m.fps),
                           reverse=True)
 
-    # Build display items: (idx_in_original_modes, display_str, is_current)
-    items: list[tuple[int, str, bool]] = []
+    # Build display items: (idx_in_original_modes, display_str)
+    items: list[tuple[int, str]] = []
     for m in sorted_modes:
         orig_idx = modes.index(m)
-        is_cur = (orig_idx == current_idx)
         display = f"{m.width}×{m.height}@{m.fps}"
-        items.append((orig_idx, display, is_cur))
+        items.append((orig_idx, display))
 
     # Calculate grid layout
     max_item_w = max(len(it[1]) for it in items) + 6  # "[NN] " + padding
@@ -364,6 +534,21 @@ def _pick_resolution(term: _Term, out, modes: list[CameraMode],
     input_buf = ""
     scroll_offset = 0
     visible_rows = max(4, H - 8)
+    current_display_idx = 0
+    for idx, (orig_idx, _display) in enumerate(items):
+        if orig_idx == current_idx:
+            current_display_idx = idx
+            break
+
+    def _clamp_visible_row() -> None:
+        nonlocal scroll_offset
+        current_row = current_display_idx // cols
+        max_scroll = max(0, rows - visible_rows)
+        if current_row < scroll_offset:
+            scroll_offset = current_row
+        elif current_row >= scroll_offset + visible_rows:
+            scroll_offset = current_row - visible_rows + 1
+        scroll_offset = max(0, min(scroll_offset, max_scroll))
 
     while True:
         buf = io.BytesIO()
@@ -374,7 +559,7 @@ def _pick_resolution(term: _Term, out, modes: list[CameraMode],
 
         # Instructions
         _draw_text(buf, 3, 2,
-                   f"Enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel")
+                   f"Use arrows, or enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel")
         _draw_text(buf, 4, 2,
                    f"Input: \x1b[1;97m{input_buf}\x1b[5m_\x1b[0m")
 
@@ -387,7 +572,8 @@ def _pick_resolution(term: _Term, out, modes: list[CameraMode],
                 idx = actual_row * cols + col_i
                 if idx >= len(items):
                     break
-                mode_idx_val, display, is_cur = items[idx]
+                mode_idx_val, display = items[idx]
+                is_cur = idx == current_display_idx
                 x = 2 + col_i * max_item_w
 
                 num_str = f"{idx + 1:>2}"
@@ -402,7 +588,7 @@ def _pick_resolution(term: _Term, out, modes: list[CameraMode],
         if rows > visible_rows:
             _draw_text(buf, start_row + visible_rows, 2,
                        f"\x1b[90m({scroll_offset + 1}-{min(scroll_offset + visible_rows, rows)}"
-                       f" of {rows} rows, ↑/↓ to scroll)\x1b[0m")
+                       f" of {rows} rows, arrows move selection)\x1b[0m")
 
         out.write(_SY_S + buf.getvalue() + _SY_E)
         out.flush()
@@ -421,11 +607,29 @@ def _pick_resolution(term: _Term, out, modes: list[CameraMode],
                         return items[sel][0]  # Return mode index
                 except ValueError:
                     pass
+            else:
+                return items[current_display_idx][0]
             input_buf = ""  # Clear on invalid
         elif key == "\x7f" or key == "\x08":  # Backspace
             input_buf = input_buf[:-1]
         elif key.isdigit():
             input_buf += key
+        elif key == "UP":
+            input_buf = ""
+            current_display_idx = max(0, current_display_idx - cols)
+            _clamp_visible_row()
+        elif key == "DOWN":
+            input_buf = ""
+            current_display_idx = min(len(items) - 1, current_display_idx + cols)
+            _clamp_visible_row()
+        elif key == "LEFT":
+            input_buf = ""
+            current_display_idx = max(0, current_display_idx - 1)
+            _clamp_visible_row()
+        elif key == "RIGHT":
+            input_buf = ""
+            current_display_idx = min(len(items) - 1, current_display_idx + 1)
+            _clamp_visible_row()
         elif key == "[" and scroll_offset > 0:  # Scroll up ([ key)
             scroll_offset = max(0, scroll_offset - 1)
         elif key == "]" and scroll_offset < rows - visible_rows:  # Scroll down (] key)
@@ -457,7 +661,7 @@ def _pick_option(
             buf,
             5,
             2,
-            "Enter number and press Enter, or "
+            "Use ↑/↓, or enter number and press Enter, or "
             "\x1b[33m[Esc]\x1b[0m to cancel",
         )
         _draw_text(buf, 6, 2, f"Input: \x1b[1;97m{input_buf}\x1b[5m_\x1b[0m")
@@ -476,6 +680,14 @@ def _pick_option(
             continue
         if key == "\x1b":
             return None
+        if key == "UP" or key == "LEFT":
+            input_buf = ""
+            current_idx = max(0, current_idx - 1)
+            continue
+        if key == "DOWN" or key == "RIGHT":
+            input_buf = ""
+            current_idx = min(len(options) - 1, current_idx + 1)
+            continue
         if key == "\n" or key == "\r":
             if not input_buf:
                 return current_idx
@@ -495,7 +707,7 @@ def _pick_option(
 
 
 def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
-                    , total_steps: int = 5) -> list[CameraConfig]:
+                    , total_steps: int = 5) -> list[CameraConfig] | None:
     """Camera identification screen — live preview + name prompt."""
     configs: list[CameraConfig] = []
 
@@ -636,22 +848,31 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
             preview_y = settings_row + 1
             avail_h = max(4, H - preview_y - 5)
             avail_w = W - 4
-            preview_w, preview_h = calc_render_size(
-                cur_width, cur_height, avail_w, avail_h)
+            preview_frame = None
 
             if cam is not None:
-                _, frame = cam.read()
-                if frame is not None:
+                _, preview_frame = cam.read()
+                if preview_frame is not None:
+                    frame_h, frame_w = preview_frame.shape[:2]
+                    preview_w, preview_h = calc_render_size(
+                        frame_w, frame_h, avail_w, avail_h)
                     # Use appropriate renderer based on device type
-                    if is_depth_camera and frame.ndim == 2:
+                    if is_depth_camera and preview_frame.ndim == 2:
                         # Grayscale/depth frame - use depth renderer
                         depth_mode = DEPTH_MODES[depth_mode_idx]
-                        rendered = render_depth(frame, preview_w, preview_h, depth_mode)
+                        rendered = render_depth(
+                            preview_frame, preview_w, preview_h, depth_mode)
                     else:
                         # Color frame - use standard renderer
-                        rendered = render_frame(frame, preview_w, preview_h, render_mode)
+                        rendered = render_frame(
+                            preview_frame, preview_w, preview_h, render_mode)
                     buf.write(blit_frame(rendered, preview_y, 3))
+                else:
+                    preview_w, preview_h = calc_render_size(
+                        cur_width, cur_height, avail_w, avail_h)
             else:
+                preview_w, preview_h = calc_render_size(
+                    cur_width, cur_height, avail_w, avail_h)
                 _draw_text(buf, preview_y, 3, "(no preview available)")
 
             prompt_row = preview_y + preview_h + 1
@@ -734,7 +955,7 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
                 elif key == "q" or key == "\x1b":
                     if cam:
                         cam.close()
-                    return configs      # quit wizard early
+                    return None      # cancel wizard early
 
                 # Throttle to ~60 FPS
                 _el = time.monotonic() - _t_now
@@ -788,21 +1009,27 @@ def _screen_cameras(term: _Term, out, devices: list[DetectedDevice]
 
 
 def _get_airbot_robot(dev: DetectedDevice):
-    """Get an AIRBOTPlay instance for device identification."""
-    if dev.dtype != "airbot_play":
+    """Get a runtime robot instance for AIRBOT identification preview."""
+    if not str(dev.dtype).startswith("airbot_"):
         return None
     try:
-        from rollio.robot import AIRBOTPlay, is_airbot_available
+        from rollio.robot import AIRBOTE2B, AIRBOTG2, AIRBOTPlay, is_airbot_available
         if not is_airbot_available():
             return None
         can_interface = dev.properties.get("can_interface", str(dev.device_id))
-        return AIRBOTPlay(can_interface=can_interface)
+        if dev.dtype == "airbot_play" and AIRBOTPlay is not None:
+            return AIRBOTPlay(can_interface=can_interface)
+        if dev.dtype == "airbot_e2b" and AIRBOTE2B is not None:
+            return AIRBOTE2B(can_interface=can_interface)
+        if dev.dtype == "airbot_g2" and AIRBOTG2 is not None:
+            return AIRBOTG2(can_interface=can_interface)
+        return None
     except Exception:
         return None
 
 
 def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
-                   , total_steps: int = 5) -> list[RobotConfig]:
+                   , total_steps: int = 5) -> list[RobotConfig] | None:
     """Robot identification screen — oscillation + name prompt."""
     configs: list[RobotConfig] = []
     show_debug = False
@@ -812,8 +1039,8 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
     for i, dev in enumerate(devices):
         rob = _make_robot(dev)
         chosen_name: str | None = None
-        chosen_role: str = "follower"
-        default_name = f"arm_{i}"
+        chosen_role: str = _default_robot_role(dev.dtype)
+        default_name = _default_robot_name(dev.dtype, i)
         phase = "preview"    # "preview" → "name" → "role" → done
         _needs_clear = True
         
@@ -839,29 +1066,40 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                        f"Type: {dev.dtype}  Joints: "
                        f"{dev.properties.get('num_joints', '?')}")
 
+            led_block = _airbot_led_block()
             if dev.dtype == "pseudo":
                 _draw_text(buf, 5, 2,
                            "\x1b[93m⟳ Last joint oscillating "
                            "(simulated identification)\x1b[0m")
             elif dev.dtype == "airbot_play" and airbot_robot is not None:
                 _draw_text(buf, 5, 2,
-                           "\x1b[93m⟳ LED blinking orange + gravity compensation "
+                           f"\x1b[93m⟳ LED blinking orange {led_block} + gravity compensation "
                            "(move arm to identify)\x1b[0m")
+            elif dev.dtype == "airbot_e2b" and airbot_robot is not None:
+                _draw_text(buf, 5, 2,
+                           f"\x1b[93m⟳ LED blinking orange {led_block} + live E2B position "
+                           "(move E2B to identify)\x1b[0m")
+            elif dev.dtype == "airbot_g2" and airbot_robot is not None:
+                _draw_text(buf, 5, 2,
+                           f"\x1b[93m⟳ LED blinking orange {led_block} + G2 oscillation "
+                           "(0-70mm identify motion)\x1b[0m")
 
             # Robot state display (re-read every iteration)
             pos = None
             n_joints = dev.properties.get("num_joints", 6)
+            command_debug: tuple[str, str] | None = None
             
             # Try AIRBOT robot first (for real hardware)
-            if airbot_robot is not None and airbot_robot._is_open:
+            if str(dev.dtype).startswith("airbot_") and airbot_robot is not None and airbot_robot._is_open:
                 try:
-                    # Step gravity compensation to keep robot in free drive
-                    airbot_robot.step_free_drive()
-                    
+                    airbot_robot.identify_step()
                     joint_state = airbot_robot.read_joint_state()
                     if joint_state.is_valid and joint_state.position is not None:
                         pos = joint_state.position
                         n_joints = len(pos)
+                    debug_getter = getattr(airbot_robot, "latest_command_debug", None)
+                    if callable(debug_getter):
+                        command_debug = debug_getter()
                 except Exception:
                     pass
             
@@ -872,12 +1110,13 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                 n_joints = len(pos) if len(pos) > 0 else n_joints
             
             # Display joint positions
+            start_row = 7
+            state_rows = 0
             if pos is not None and len(pos) > 0:
-                start_row = 7
                 bar_w = min(40, W - 25)
                 for j in range(n_joints):
                     p = pos[j] if j < len(pos) else 0.0
-                    frac = float(np.clip((p + 2) / 4, 0, 1))
+                    value_text, frac = _format_joint_preview(dev.dtype, float(p))
                     bar_len = int(frac * bar_w)
                     bar = "█" * bar_len + "░" * (bar_w - bar_len)
                     # For pseudo robot, mark last joint as moving
@@ -885,11 +1124,29 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                     if dev.dtype == "pseudo" and j == n_joints - 1:
                         marker = " \x1b[91m← moving\x1b[0m"
                     _draw_text(buf, start_row + j, 4,
-                               f"j{j} \x1b[36m{p:+6.2f}\x1b[0m "
+                               f"j{j} \x1b[36m{value_text}\x1b[0m "
                                f"\x1b[33m{bar}\x1b[0m{marker}")
+                state_rows = n_joints
 
-            prompt_row = max(7 + dev.properties.get("num_joints", 6) + 2,
-                             H - 5)
+            command_rows = 0
+            if dev.dtype in {"airbot_e2b", "airbot_g2"} and command_debug is not None:
+                cmd_type, args_text = command_debug
+                max_text_w = max(16, W - 8)
+                cmd_line = f"Cmd: {cmd_type}"
+                args_line = f"Args: {args_text}"
+                if len(cmd_line) > max_text_w:
+                    cmd_line = cmd_line[: max_text_w - 3] + "..."
+                if len(args_line) > max_text_w:
+                    args_line = args_line[: max_text_w - 3] + "..."
+                cmd_row = start_row + max(state_rows, 1) + 1
+                _draw_text(buf, cmd_row, 4, f"\x1b[90m{cmd_line}\x1b[K")
+                _draw_text(buf, cmd_row + 1, 4, f"\x1b[90m{args_line}\x1b[K")
+                command_rows = 2
+
+            prompt_row = max(
+                start_row + max(dev.properties.get("num_joints", 6), state_rows, 1) + command_rows + 2,
+                H - 5,
+            )
 
             if phase == "preview":
                 # Live-preview phase: robot state refreshes every iteration,
@@ -936,7 +1193,7 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                             pass
                     if rob:
                         rob.close()
-                    return configs
+                    return None
 
                 # Throttle to ~60 FPS
                 _el = time.monotonic() - _t_now
@@ -975,7 +1232,8 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
 
                 result = _prompt_line(
                     term, out, prompt_row - 1, 2,
-                    "Role ([f]ollower / [l]eader): ", "f")
+                    "Role ([f]ollower / [l]eader): ",
+                    "l" if chosen_role == "leader" else "f")
                 if result is None:
                     phase = "name"
                     continue
@@ -1237,13 +1495,22 @@ def _match_robot_devices(
     for rc in rob_configs:
         matched_dev = None
         for di, dev in enumerate(rob_devs):
-            if di not in used_rob_devs and str(dev.properties.get("can_interface", dev.device_id)) == str(rc.device):
+            same_type = dev.dtype == rc.type
+            same_device = str(dev.properties.get("can_interface", dev.device_id)) == str(rc.device)
+            if di not in used_rob_devs and same_type and same_device:
                 matched_dev = dev
                 used_rob_devs.add(di)
                 break
         if matched_dev is None:
             for di, dev in enumerate(rob_devs):
                 if di not in used_rob_devs and dev.dtype == rc.type:
+                    matched_dev = dev
+                    used_rob_devs.add(di)
+                    break
+        if matched_dev is None:
+            for di, dev in enumerate(rob_devs):
+                same_device = str(dev.properties.get("can_interface", dev.device_id)) == str(rc.device)
+                if di not in used_rob_devs and same_device:
                     matched_dev = dev
                     used_rob_devs.add(di)
                     break
@@ -1282,6 +1549,7 @@ def _screen_summary(term: _Term, out,
     selected_cam = 0 if cam_entries else -1
     _needs_restart = True
     preview_runtime: AsyncCollectionRuntime | None = None
+    preview_started_at: float | None = None
 
     def _draw_text_clear(buf, row: int, col: int, text: str, clear_w: int = 0):
         """Draw text and clear to specified width or end of line."""
@@ -1312,15 +1580,50 @@ def _screen_summary(term: _Term, out,
         return AsyncCollectionRuntime.from_config(
             preview_cfg,
             scheduler_driver="asyncio",
+            preview_live_feedback=True,
         )
+
+    def _aggregate_task_rate(task_metrics: dict[str, object], prefix: str) -> tuple[float | None, int, float | None]:
+        if preview_started_at is None:
+            return None, 0, None
+        runtime_age = max(time.monotonic() - preview_started_at, 1e-6)
+        matching = [
+            metric
+            for name, metric in task_metrics.items()
+            if name.startswith(prefix)
+        ]
+        if not matching:
+            return None, 0, None
+        rate_hz = sum(metric.run_count / runtime_age for metric in matching) / len(matching)
+        overruns = sum(metric.overrun_count for metric in matching)
+        avg_step_ms = sum(metric.avg_step_ms for metric in matching) / len(matching)
+        return rate_hz, overruns, avg_step_ms
+
+    def _render_rate_text(target_hz: int, observed_hz: float | None) -> str:
+        if observed_hz is None:
+            return f"{target_hz}Hz target / n/a actual"
+        return f"{target_hz}Hz target / {observed_hz:5.1f}Hz actual"
 
     try:
         while result is None:
             if _needs_restart:
                 if preview_runtime is not None:
                     preview_runtime.close()
-                preview_runtime = _build_preview_runtime()
-                preview_runtime.open()
+                def _start_preview_runtime() -> AsyncCollectionRuntime:
+                    runtime = _build_preview_runtime()
+                    runtime.open()
+                    return runtime
+
+                preview_runtime = _run_with_loading(
+                    term,
+                    out,
+                    step=step,
+                    total=total_steps,
+                    title="Summary — Live Preview",
+                    message="Starting live preview runtime...",
+                    work=_start_preview_runtime,
+                )
+                preview_started_at = time.monotonic()
                 _needs_clear = True
                 _needs_restart = False
 
@@ -1331,6 +1634,20 @@ def _screen_summary(term: _Term, out,
                 preview_runtime.latest_robot_states()
                 if preview_runtime is not None
                 else {}
+            )
+            driver_metrics = (
+                preview_runtime.scheduler_metrics()["driver"]
+                if preview_runtime is not None
+                else None
+            )
+            task_metrics = driver_metrics.task_metrics if driver_metrics is not None else {}
+            telemetry_actual_hz, telemetry_overruns, telemetry_avg_step_ms = _aggregate_task_rate(
+                task_metrics,
+                "robot-",
+            )
+            control_actual_hz, control_overruns, control_avg_step_ms = _aggregate_task_rate(
+                task_metrics,
+                "teleop-",
             )
 
             # FPS tracking
@@ -1371,6 +1688,33 @@ def _screen_summary(term: _Term, out,
                              f"│ \x1b[1mDepth codec:\x1b[0m \x1b[90m{depth_codec[:info_w-18]}\x1b[0m",
                              info_w)
             row += 1
+            if preview_runtime is not None:
+                _draw_text_clear(buf, row, 2,
+                                f"│ \x1b[1mDriver:\x1b[0m \x1b[90m{preview_runtime.scheduler_driver}\x1b[0m",
+                                info_w)
+                row += 1
+                _draw_text_clear(buf, row, 2,
+                                f"│ \x1b[1mTelemetry:\x1b[0m \x1b[90m{_render_rate_text(preview_runtime.telemetry_hz, telemetry_actual_hz)}\x1b[0m",
+                                info_w)
+                row += 1
+                _draw_text_clear(buf, row, 2,
+                                f"│ \x1b[1mControl:\x1b[0m \x1b[90m{_render_rate_text(preview_runtime.control_hz, control_actual_hz)}\x1b[0m",
+                                info_w)
+                row += 1
+                _draw_text_clear(buf, row, 2,
+                                f"│ \x1b[1mOverruns:\x1b[0m \x1b[90mtelem {telemetry_overruns} / ctrl {control_overruns}\x1b[0m",
+                                info_w)
+                row += 1
+                step_parts = []
+                if telemetry_avg_step_ms is not None:
+                    step_parts.append(f"telem {telemetry_avg_step_ms:4.1f}ms")
+                if control_avg_step_ms is not None:
+                    step_parts.append(f"ctrl {control_avg_step_ms:4.1f}ms")
+                if step_parts:
+                    _draw_text_clear(buf, row, 2,
+                                    f"│ \x1b[1mAvg step:\x1b[0m \x1b[90m{' / '.join(step_parts)}\x1b[0m",
+                                    info_w)
+                    row += 1
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
             row += 1
             _draw_text_clear(buf, row, 2,
@@ -1416,8 +1760,7 @@ def _screen_summary(term: _Term, out,
                                  f"\x1b[90m{rc.num_joints}-DOF\x1b[0m",
                                  info_w)
                 row += 1
-                # Show SN for AIRBOT devices
-                if rc.type == "airbot_play" and matched_rob_dev is not None:
+                if rc.type.startswith("airbot_") and matched_rob_dev is not None:
                     sn = matched_rob_dev.properties.get("serial_number", "")
                     eef = matched_rob_dev.properties.get("end_effector_type", "")
                     info_line = ""
@@ -1545,26 +1888,64 @@ def _screen_summary(term: _Term, out,
 
                 for rc, _ in rob_entries:
                     role_clr = "92" if rc.role == "leader" else "33"
-                    _draw_text(buf, preview_row, preview_col,
-                               f"\x1b[{role_clr};1m{rc.name}\x1b[0m "
-                               f"\x1b[90m({rc.num_joints}-DOF, {rc.role})\x1b[0m")
+                    _draw_text_clear(
+                        buf,
+                        preview_row,
+                        preview_col,
+                        f"\x1b[{role_clr};1m{rc.name}\x1b[0m "
+                        f"\x1b[90m({rc.num_joints}-DOF, {rc.role})\x1b[0m",
+                        preview_w,
+                    )
                     try:
                         state = latest_robot_states.get(rc.name, {})
-                        pos = state.get("position", np.zeros(0))
-                        for j in range(len(pos)):
-                            p = pos[j]
-                            frac = float(np.clip((p + 2) / 4, 0, 1))
-                            bar_len = int(frac * bar_w)
-                            bar = "█" * bar_len + "░" * (bar_w - bar_len)
-                            _draw_text(buf, preview_row + 1 + j,
-                                       preview_col + 2,
-                                       f"j{j} \x1b[36m{p:+5.2f}\x1b[0m "
-                                       f"\x1b[33m{bar}\x1b[0m")
-                        preview_row += 1 + len(pos) + 1
+                        pos = state.get("position")
+                        reserved_rows = max(1, rc.num_joints)
+                        if pos is None or len(pos) == 0:
+                            _draw_text_clear(
+                                buf,
+                                preview_row + 1,
+                                preview_col + 2,
+                                "\x1b[90m(no data)\x1b[0m",
+                                max(preview_w - 2, 0),
+                            )
+                            for j in range(1, reserved_rows):
+                                _draw_text_clear(
+                                    buf,
+                                    preview_row + 1 + j,
+                                    preview_col + 2,
+                                    "",
+                                    max(preview_w - 2, 0),
+                                )
+                        else:
+                            for j in range(reserved_rows):
+                                if j < len(pos):
+                                    p = pos[j]
+                                    value_text, frac = _format_joint_preview(rc.type, float(p))
+                                    bar_len = int(frac * bar_w)
+                                    bar = "█" * bar_len + "░" * (bar_w - bar_len)
+                                    line = (
+                                        f"j{j} \x1b[36m{value_text}\x1b[0m "
+                                        f"\x1b[33m{bar}\x1b[0m"
+                                    )
+                                else:
+                                    line = ""
+                                _draw_text_clear(
+                                    buf,
+                                    preview_row + 1 + j,
+                                    preview_col + 2,
+                                    line,
+                                    max(preview_w - 2, 0),
+                                )
+                        preview_row += 1 + reserved_rows + 1
                     except Exception:
-                        _draw_text(buf, preview_row + 1, preview_col + 2,
-                                   "\x1b[90m(error)\x1b[0m")
-                        preview_row += 3
+                        _draw_text_clear(
+                            buf,
+                            preview_row + 1,
+                            preview_col + 2,
+                            "\x1b[90m(error)\x1b[0m",
+                            max(preview_w - 2, 0),
+                        )
+                        preview_row += 1 + max(1, rc.num_joints) + 1
 
             # Debug overlay
             if show_debug:
@@ -1659,6 +2040,15 @@ def _screen_summary(term: _Term, out,
 
     finally:
         if preview_runtime is not None:
+            _run_with_loading(
+                term,
+                out,
+                step=step,
+                total=total_steps,
+                title="Summary — Returning Robots",
+                message="Returning robots to zero position...",
+                work=lambda: preview_runtime.return_robots_to_zero(timeout=5.0),
+            )
             preview_runtime.close()
 
     return result
@@ -1694,10 +2084,30 @@ def run_wizard(
     with _Term() as term:
         # Step 1: Cameras
         cam_configs = _screen_cameras(term, out, cam_devs, total_steps=total_steps)
+        if cam_configs is None:
+            return None
 
+        _show_loading_transition(
+            term,
+            out,
+            step=2,
+            total=total_steps,
+            title="Loading Robots",
+            message="Preparing robot setup...",
+        )
         # Step 2: Robots
         rob_configs = _screen_robots(term, out, rob_devs, total_steps=total_steps)
+        if rob_configs is None:
+            return None
 
+        _show_loading_transition(
+            term,
+            out,
+            step=3,
+            total=total_steps,
+            title="Loading Project Settings",
+            message="Preparing project settings...",
+        )
         # Step 3: Project/settings
         settings = _screen_settings(
             term,
@@ -1712,6 +2122,14 @@ def run_wizard(
 
         teleop_pairs: list[TeleopPairConfig] = []
         if mode == "teleop":
+            _show_loading_transition(
+                term,
+                out,
+                step=4,
+                total=total_steps,
+                title="Loading Tele-op Pairing",
+                message="Preparing tele-op pairing...",
+            )
             pair_configs = _screen_teleop_pairs(
                 term,
                 out,
@@ -1724,6 +2142,14 @@ def run_wizard(
             teleop_pairs = pair_configs
 
         # Step 5: Live summary screen with previews
+        _show_loading_transition(
+            term,
+            out,
+            step=5,
+            total=total_steps,
+            title="Loading Live Preview",
+            message="Preparing final live preview...",
+        )
         should_save = _screen_summary(
             term, out,
             cam_configs, rob_configs,

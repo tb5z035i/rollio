@@ -11,7 +11,7 @@ import pytest
 from rollio.robot import (
     ControlMode,
     DetectedRobot,
-    EndEffectorState,
+    FrameState,
     FeedbackCapability,
     FreeDriveCommand,
     JointState,
@@ -321,11 +321,11 @@ class TestPseudoKinematicsModel:
         """Test DOF property."""
         assert model.n_dof == 6
     
-    def test_end_effector_names(self, model: PseudoKinematicsModel) -> None:
-        """Test end-effector names."""
-        names = model.end_effector_names
+    def test_frame_names(self, model: PseudoKinematicsModel) -> None:
+        """Test task-space frame names."""
+        names = model.frame_names
         assert len(names) == 1
-        assert names[0] == "end_effector"
+        assert names[0] == "frame"
     
     def test_forward_kinematics_zero_config(self, model: PseudoKinematicsModel) -> None:
         """Test FK at zero configuration."""
@@ -484,9 +484,9 @@ class TestPseudoRobotArm:
         assert robot.has_position_feedback is True
         assert robot.has_velocity_feedback is True
         assert robot.has_effort_feedback is True
-        assert robot.has_end_pose_feedback is True
-        assert robot.has_end_twist_feedback is True
-        assert robot.has_end_wrench_feedback is False  # No F/T sensor
+        assert robot.has_frame_pose_feedback is True
+        assert robot.has_frame_twist_feedback is True
+        assert robot.has_frame_wrench_feedback is False  # No F/T sensor
     
     def test_lifecycle(self) -> None:
         """Test open/close/enable/disable lifecycle."""
@@ -529,11 +529,11 @@ class TestPseudoRobotArm:
         assert state.effort is not None
         assert state.effort.shape == (6,)
     
-    def test_read_end_effector_state(self, robot: PseudoRobotArm) -> None:
-        """Test reading end-effector state."""
-        ee_state = robot.read_end_effector_state()
+    def test_read_frame_state(self, robot: PseudoRobotArm) -> None:
+        """Test reading task-space frame state."""
+        ee_state = robot.read_frame_state()
         
-        assert isinstance(ee_state, EndEffectorState)
+        assert isinstance(ee_state, FrameState)
         assert ee_state.pose is not None
         assert ee_state.twist is not None
         assert ee_state.wrench is None  # No F/T sensor
@@ -544,7 +544,7 @@ class TestPseudoRobotArm:
         
         assert isinstance(state, RobotState)
         assert state.joint_state is not None
-        assert len(state.end_effectors) == 1
+        assert len(state.frames) == 1
         assert state.control_mode == ControlMode.DISABLED
     
     def test_control_mode_setting(self, robot: PseudoRobotArm) -> None:

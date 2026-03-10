@@ -11,7 +11,6 @@ import numpy as np
 
 from rollio.robot.base import (
     ControlMode,
-    EndEffectorState,
     FeedbackCapability,
     FreeDriveCommand,
     JointState,
@@ -55,26 +54,27 @@ class PseudoKinematicsModel(KinematicsModel):
     
     def __init__(self, n_dof: int = 6) -> None:
         self._n_dof = n_dof
-        self._end_effector_names = ["end_effector"]
+        self._frame_names = ["frame"]
     
     @property
     def n_dof(self) -> int:
         return self._n_dof
     
     @property
-    def end_effector_names(self) -> list[str]:
-        return self._end_effector_names
+    def frame_names(self) -> list[str]:
+        return self._frame_names
     
     def forward_kinematics(
         self, 
         q: np.ndarray, 
-        end_effector: str | None = None
+        frame: str | None = None
     ) -> Pose:
         """Compute simplified forward kinematics.
         
         This uses a simplified model that produces reasonable-looking
-        end-effector poses but is not physically accurate.
+        frame poses but is not physically accurate.
         """
+        del frame
         q = np.asarray(q, dtype=np.float64)
         
         # Simple FK model: accumulate rotations and translations
@@ -129,7 +129,7 @@ class PseudoKinematicsModel(KinematicsModel):
         self,
         target_pose: Pose,
         q_init: np.ndarray | None = None,
-        end_effector: str | None = None,
+        frame: str | None = None,
         max_iterations: int = 100,
         tolerance: float = 1e-6,
     ) -> tuple[np.ndarray | None, bool]:
@@ -137,6 +137,7 @@ class PseudoKinematicsModel(KinematicsModel):
         
         This is a basic iterative IK solver that may not always converge.
         """
+        del frame
         if q_init is None:
             q = np.zeros(self._n_dof)
         else:
@@ -173,12 +174,13 @@ class PseudoKinematicsModel(KinematicsModel):
     def jacobian(
         self, 
         q: np.ndarray, 
-        end_effector: str | None = None
+        frame: str | None = None
     ) -> np.ndarray:
         """Compute numerical Jacobian via finite differences.
         
         This is a simple numerical approximation.
         """
+        del frame
         q = np.asarray(q, dtype=np.float64)
         eps = 1e-6
         
@@ -269,6 +271,7 @@ class PseudoRobotArm(RobotArm):
     """
     
     ROBOT_TYPE = "pseudo"
+    DIRECT_MAP_ALLOWLIST: tuple[str, ...] = ()
     
     # ── Class methods ─────────────────────────────────────────────────────
     
@@ -342,8 +345,8 @@ class PseudoRobotArm(RobotArm):
                 FeedbackCapability.POSITION,
                 FeedbackCapability.VELOCITY,
                 FeedbackCapability.EFFORT,
-                FeedbackCapability.END_POSE,
-                FeedbackCapability.END_TWIST,
+                FeedbackCapability.FRAME_POSE,
+                FeedbackCapability.FRAME_TWIST,
             },
             properties={
                 "simulated": True,

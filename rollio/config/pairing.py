@@ -9,15 +9,23 @@ from rollio.config.schema import RobotConfig, TeleopPairConfig
 def supports_joint_direct_mapping(leader: RobotConfig, follower: RobotConfig) -> bool:
     """Return True when a leader/follower pair can use direct joint mapping."""
     return (
-        leader.type == follower.type
-        and leader.num_joints == follower.num_joints
+        leader.num_joints == follower.num_joints
+        and follower.type in leader.direct_map_allowlist
+        and leader.type in follower.direct_map_allowlist
     )
+
+
+def supports_pose_fkik_mapping(leader: RobotConfig, follower: RobotConfig) -> bool:
+    """Return True when a leader/follower pair can use pose FK/IK."""
+    return leader.num_joints > 1 and follower.num_joints > 1
 
 
 def default_mapper_for_pair(leader: RobotConfig, follower: RobotConfig) -> str:
     """Choose the default mapper for one explicit tele-op pair."""
     if supports_joint_direct_mapping(leader, follower):
         return "joint_direct"
+    if supports_pose_fkik_mapping(leader, follower):
+        return "pose_fk_ik"
     return "pose_fk_ik"
 
 
@@ -26,12 +34,26 @@ def suggest_teleop_pairs(robots: list[RobotConfig]) -> list[TeleopPairConfig]:
     leaders = [robot for robot in robots if robot.role == "leader"]
     followers = [robot for robot in robots if robot.role == "follower"]
     pairs: list[TeleopPairConfig] = []
-    for idx, (leader, follower) in enumerate(zip(leaders, followers)):
+    remaining_followers = list(followers)
+    for leader in leaders:
+        follower_match = None
+        for follower in remaining_followers:
+            if supports_joint_direct_mapping(leader, follower):
+                follower_match = follower
+                break
+        if follower_match is None:
+            for follower in remaining_followers:
+                if supports_pose_fkik_mapping(leader, follower):
+                    follower_match = follower
+                    break
+        if follower_match is None:
+            continue
+        remaining_followers.remove(follower_match)
         pairs.append(TeleopPairConfig(
-            name=f"pair_{idx}",
+            name=f"pair_{len(pairs)}",
             leader=leader.name,
-            follower=follower.name,
-            mapper=default_mapper_for_pair(leader, follower),
+            follower=follower_match.name,
+            mapper=default_mapper_for_pair(leader, follower_match),
         ))
     return pairs
 

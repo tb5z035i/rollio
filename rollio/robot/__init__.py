@@ -10,7 +10,7 @@ from rollio.robot.base import (
     ControlMode,
     FeedbackCapability,
     # State dataclasses
-    EndEffectorState,
+    FrameState,
     JointState,
     Pose,
     RobotInfo,
@@ -35,6 +35,12 @@ except ImportError:
     is_airbot_available = lambda: False  # type: ignore
 
 try:
+    from rollio.robot.airbot_eef import AIRBOTE2B, AIRBOTG2
+except ImportError:
+    AIRBOTE2B = None  # type: ignore
+    AIRBOTG2 = None  # type: ignore
+
+try:
     from rollio.robot.pinocchio_kinematics import (
         PinocchioKinematicsModel,
         is_pinocchio_available,
@@ -49,12 +55,22 @@ from rollio.robot.can_utils import (
     scan_can_interfaces,
 )
 
+
+def robot_class_for_type(robot_type: str) -> type[RobotArm] | None:
+    """Resolve a registered built-in robot class by type name."""
+    key = str(robot_type).strip()
+    candidates = (PseudoRobotArm, AIRBOTPlay, AIRBOTE2B, AIRBOTG2)
+    for cls in candidates:
+        if cls is not None and getattr(cls, "ROBOT_TYPE", None) == key:
+            return cls
+    return None
+
 __all__ = [
     # Enums
     "ControlMode",
     "FeedbackCapability",
     # State dataclasses
-    "EndEffectorState",
+    "FrameState",
     "JointState",
     "Pose",
     "RobotInfo",
@@ -71,6 +87,8 @@ __all__ = [
     "PseudoKinematicsModel",
     "PseudoRobotArm",
     "AIRBOTPlay",
+    "AIRBOTE2B",
+    "AIRBOTG2",
     "PinocchioKinematicsModel",
     # Availability checks
     "is_airbot_available",
@@ -80,4 +98,5 @@ __all__ = [
     "DetectedRobot",
     "scan_robots",
     "scan_can_interfaces",
+    "robot_class_for_type",
 ]

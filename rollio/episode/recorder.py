@@ -26,6 +26,13 @@ class EpisodeData:
     robot_states: dict[str, list[tuple[float, dict[str, np.ndarray]]]] = field(
         default_factory=dict)
 
+    # Per-teleop-pair: list of (relative_timestamp, target_vector)
+    pair_actions: dict[str, list[tuple[float, np.ndarray]]] = field(
+        default_factory=dict)
+
+    # Ordered action slices for the flattened action vector.
+    action_layout: list[dict[str, int | str]] = field(default_factory=list)
+
 
 class EpisodeRecorder:
     """Records one episode at a time from multiple sensors.

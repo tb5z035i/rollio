@@ -12,9 +12,24 @@ from rollio.episode.codecs import (
     get_depth_codec_option,
     get_rgb_codec_option,
 )
+from rollio.robot import robot_class_for_type
 
 
 # ─── Sub-models ────────────────────────────────────────────────────────
+
+
+def default_direct_map_allowlist(
+    robot_type: str,
+    role: Literal["leader", "follower"] | None = None,
+) -> list[str]:
+    """Return the default direct-mapping allowlist for one robot type."""
+    normalized_type = str(robot_type).strip()
+    robot_cls = robot_class_for_type(normalized_type)
+    if robot_cls is not None:
+        return list(robot_cls.default_direct_map_allowlist(normalized_type, role))
+    if normalized_type:
+        return [normalized_type]
+    return []
 
 class CameraChannelConfig(BaseModel):
     """Configuration for a single camera channel/stream."""
@@ -55,6 +70,7 @@ class RobotConfig(BaseModel):
     role: Literal["leader", "follower"] = "follower"
     num_joints: int = 6
     device: str = ""               # CAN bus, serial port, etc.
+    direct_map_allowlist: list[str] = Field(default_factory=list)
     options: dict[str, Any] = Field(default_factory=dict)  # backend-specific options
 
     @field_validator("type", mode="before")
@@ -64,6 +80,22 @@ class RobotConfig(BaseModel):
         if not robot_type:
             raise ValueError("Robot type must be a non-empty string")
         return robot_type
+
+    @model_validator(mode="after")
+    def _populate_direct_map_allowlist(self) -> "RobotConfig":
+        if self.direct_map_allowlist:
+            normalized = [
+                str(item).strip()
+                for item in self.direct_map_allowlist
+                if str(item).strip()
+            ]
+            self.direct_map_allowlist = list(dict.fromkeys(normalized))
+        else:
+            self.direct_map_allowlist = default_direct_map_allowlist(
+                self.type,
+                self.role,
+            )
+        return self
 
 
 class StorageConfig(BaseModel):
@@ -97,8 +129,8 @@ class UploadConfig(BaseModel):
 
 class AsyncPipelineConfig(BaseModel):
     export_queue_size: int = 4
-    telemetry_hz: int = 50
-    control_hz: int = 100
+    telemetry_hz: int = 250
+    control_hz: int = 250
     max_pending_episodes: int = 8
     allow_drop_preview_frames: bool = True
 
@@ -155,6 +187,21 @@ class RollioConfig(BaseModel):
             raise ValueError(
                 "Robot names must be unique: "
                 + ", ".join(sorted(duplicate_robot_names))
+            )
+
+        duplicate_robot_device_keys = [
+            f"{robot_type}@{device}"
+            for (robot_type, device), count in Counter(
+                (robot.type, robot.device.strip())
+                for robot in self.robots
+                if robot.device.strip()
+            ).items()
+            if count > 1
+        ]
+        if duplicate_robot_device_keys:
+            raise ValueError(
+                "Robot type/device combinations must be unique: "
+                + ", ".join(sorted(duplicate_robot_device_keys))
             )
 
         if self.teleop_pairs:

@@ -14,6 +14,7 @@ from rollio.config import (
     TeleopPairConfig,
     default_mapper_for_pair,
     suggest_teleop_pairs,
+    supports_joint_direct_mapping,
     validate_teleop_pairs,
 )
 from rollio.episode.codecs import get_depth_codec_option, get_rgb_codec_option
@@ -51,6 +52,55 @@ def test_suggest_teleop_pairs_builds_explicit_default_pairs() -> None:
     ]
 
 
+def test_airbot_eef_allowlists_encode_supported_direction() -> None:
+    leader_e2b = RobotConfig(
+        name="leader_e2b",
+        type="airbot_e2b",
+        role="leader",
+        num_joints=1,
+    )
+    follower_g2 = RobotConfig(
+        name="follower_g2",
+        type="airbot_g2",
+        role="follower",
+        num_joints=1,
+    )
+    leader_g2 = RobotConfig(
+        name="leader_g2",
+        type="airbot_g2",
+        role="leader",
+        num_joints=1,
+    )
+    follower_e2b = RobotConfig(
+        name="follower_e2b",
+        type="airbot_e2b",
+        role="follower",
+        num_joints=1,
+    )
+
+    assert leader_e2b.direct_map_allowlist == ["airbot_g2"]
+    assert follower_g2.direct_map_allowlist == ["airbot_e2b"]
+    assert leader_g2.direct_map_allowlist == []
+    assert follower_e2b.direct_map_allowlist == []
+    assert supports_joint_direct_mapping(leader_e2b, follower_g2) is True
+    assert supports_joint_direct_mapping(leader_g2, follower_e2b) is False
+
+
+def test_suggest_teleop_pairs_uses_supported_airbot_eef_direction() -> None:
+    robots = [
+        RobotConfig(name="leader_e2b", type="airbot_e2b", role="leader", num_joints=1),
+        RobotConfig(name="leader_g2", type="airbot_g2", role="leader", num_joints=1),
+        RobotConfig(name="follower_g2", type="airbot_g2", role="follower", num_joints=1),
+        RobotConfig(name="follower_e2b", type="airbot_e2b", role="follower", num_joints=1),
+    ]
+
+    pairs = suggest_teleop_pairs(robots)
+
+    assert [(pair.leader, pair.follower, pair.mapper) for pair in pairs] == [
+        ("leader_e2b", "follower_g2", "joint_direct"),
+    ]
+
+
 def test_validate_teleop_pairs_rejects_duplicate_followers() -> None:
     with pytest.raises(ValueError, match="follower"):
         validate_teleop_pairs(
@@ -79,6 +129,13 @@ def test_encoder_config_normalizes_legacy_aliases() -> None:
     assert cfg.depth_codec == "rawvideo"
 
 
+def test_rollio_config_defaults_async_pipeline_to_250_hz() -> None:
+    cfg = RollioConfig(project_name="demo")
+
+    assert cfg.async_pipeline.telemetry_hz == 250
+    assert cfg.async_pipeline.control_hz == 250
+
+
 def test_rollio_config_validates_explicit_pair_references() -> None:
     with pytest.raises(ValueError, match="Unknown follower robot"):
         RollioConfig(
@@ -92,6 +149,29 @@ def test_rollio_config_validates_explicit_pair_references() -> None:
                     leader="leader_a",
                     follower="missing_follower",
                     mapper="joint_direct",
+                ),
+            ],
+        )
+
+
+def test_rollio_config_rejects_duplicate_robot_type_device_pairs() -> None:
+    with pytest.raises(ValueError, match="type/device combinations must be unique"):
+        RollioConfig(
+            project_name="demo",
+            robots=[
+                RobotConfig(
+                    name="leader_arm",
+                    type="airbot_play",
+                    role="leader",
+                    num_joints=6,
+                    device="can0",
+                ),
+                RobotConfig(
+                    name="follower_arm",
+                    type="airbot_play",
+                    role="follower",
+                    num_joints=6,
+                    device="can0",
                 ),
             ],
         )

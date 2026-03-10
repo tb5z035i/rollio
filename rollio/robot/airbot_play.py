@@ -19,6 +19,11 @@ from typing import Any
 
 import numpy as np
 
+from rollio.robot.airbot_shared import (
+    _import_airbot_hardware,
+    is_airbot_available,
+    scan_airbot_detected_robots,
+)
 from rollio.robot.base import (
     ControlMode,
     FeedbackCapability,
@@ -32,40 +37,14 @@ from rollio.robot.base import (
 )
 from rollio.robot.can_utils import (
     is_can_interface_up,
-    is_python_can_available,
     probe_airbot_device,
     query_airbot_end_effector,
     query_airbot_gravity_coefficients,
-    query_airbot_properties,
     query_airbot_serial,
-    scan_can_interfaces,
     set_airbot_led,
 )
 from rollio.robot.scanner import DetectedRobot
 from rollio.utils.time import monotonic_sec
-
-# Lazy imports for optional dependencies
-_ah = None
-_AH_AVAILABLE = None
-
-
-def _import_airbot_hardware():
-    """Lazy import airbot_hardware_py."""
-    global _ah, _AH_AVAILABLE
-    if _AH_AVAILABLE is None:
-        try:
-            import airbot_hardware_py as ah
-            _ah = ah
-            _AH_AVAILABLE = True
-        except ImportError:
-            _AH_AVAILABLE = False
-    return _ah, _AH_AVAILABLE
-
-
-def is_airbot_available() -> bool:
-    """Check if airbot_hardware_py is available."""
-    _, available = _import_airbot_hardware()
-    return available
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -95,20 +74,20 @@ class AIRBOTKinematicsModel(KinematicsModel):
         return self._inner.n_dof
 
     @property
-    def end_effector_names(self) -> list[str]:
-        return self._inner.end_effector_names
+    def frame_names(self) -> list[str]:
+        return self._inner.frame_names
 
-    def forward_kinematics(self, q, end_effector=None):
-        return self._inner.forward_kinematics(q, end_effector)
+    def forward_kinematics(self, q, frame=None):
+        return self._inner.forward_kinematics(q, frame)
 
     def inverse_kinematics(self, target_pose, q_init=None,
-                           end_effector=None, max_iterations=100,
+                           frame=None, max_iterations=100,
                            tolerance=1e-6):
         return self._inner.inverse_kinematics(
-            target_pose, q_init, end_effector, max_iterations, tolerance)
+            target_pose, q_init, frame, max_iterations, tolerance)
 
-    def jacobian(self, q, end_effector=None):
-        return self._inner.jacobian(q, end_effector)
+    def jacobian(self, q, frame=None):
+        return self._inner.jacobian(q, frame)
 
     def inverse_dynamics(self, q, qd, qdd):
         return self._inner.inverse_dynamics(q, qd, qdd)
@@ -158,6 +137,7 @@ class AIRBOTPlay(RobotArm):
     """
     
     ROBOT_TYPE = "airbot_play"
+    DIRECT_MAP_ALLOWLIST = ("airbot_play",)
     N_DOF = 6
     
     # Arm joint names (joints 1-6, excludes gripper joints)
@@ -171,6 +151,10 @@ class AIRBOTPlay(RobotArm):
         "other": np.array([0.6, 0.6, 0.6, 1.5, 1.5, 1.5]),
     }
     
+    # Fixed MIT gains required by the AIRBOT controller in target-tracking mode.
+    TARGET_TRACKING_KP = np.array([200.0, 200.0, 200.0, 50.0, 50.0, 50.0])
+    TARGET_TRACKING_KD = np.array([5.0, 5.0, 5.0, 1.0, 1.0, 1.0])
+    
     # ── Class methods ─────────────────────────────────────────────────────
     
     @classmethod
@@ -181,33 +165,11 @@ class AIRBOTPlay(RobotArm):
         and checking for the expected AIRBOT response pattern.
         Also queries serial number and end effector type.
         """
-        if not is_airbot_available():
-            return []
-        
-        found = []
-        for iface in scan_can_interfaces():
-            if is_can_interface_up(iface):
-                # Probe the interface to verify it's an AIRBOT device
-                if probe_airbot_device(iface, timeout=0.5):
-                    # Query additional properties (SN, end effector)
-                    props = query_airbot_properties(iface, timeout=0.5)
-                    props["motor_types"] = ["OD", "OD", "OD", "DM", "DM", "DM"]
-                    
-                    # Build label with serial number if available
-                    sn = props.get("serial_number", "")
-                    label = f"AIRBOT Play ({iface})"
-                    if sn:
-                        label = f"AIRBOT Play ({iface}) SN:{sn}"
-                    
-                    found.append(DetectedRobot(
-                        robot_type=cls.ROBOT_TYPE,
-                        device_id=iface,
-                        label=label,
-                        n_dof=cls.N_DOF,
-                        properties=props
-                    ))
-        
-        return found
+        return [
+            robot
+            for robot in scan_airbot_detected_robots()
+            if robot.robot_type == cls.ROBOT_TYPE
+        ]
     
     @classmethod
     def probe(cls, device_id: int | str) -> bool:
@@ -234,7 +196,7 @@ class AIRBOTPlay(RobotArm):
         urdf_path: str | Path | None = None,
         control_frequency: int = 250,
         gravity_coefficients: np.ndarray | None = None,
-        end_effector_frame: str | None = None,
+        frame_name: str | None = None,
     ) -> None:
         ah, available = _import_airbot_hardware()
         if not available:
@@ -258,7 +220,7 @@ class AIRBOTPlay(RobotArm):
         # Kinematics model (lazy loaded)
         self._kinematics: KinematicsModel | None = None
         self._urdf_path = urdf_path
-        self._ee_frame = end_effector_frame
+        self._frame_name = frame_name
         
         # Robot properties (cached, populated by query_properties())
         self._properties: dict[str, Any] = {
@@ -286,8 +248,8 @@ class AIRBOTPlay(RobotArm):
                 FeedbackCapability.POSITION,
                 FeedbackCapability.VELOCITY,
                 FeedbackCapability.EFFORT,
-                FeedbackCapability.END_POSE,
-                FeedbackCapability.END_TWIST,
+                FeedbackCapability.FRAME_POSE,
+                FeedbackCapability.FRAME_TWIST,
             },
             properties=self._properties
         )
@@ -334,7 +296,7 @@ class AIRBOTPlay(RobotArm):
             if urdf_path and Path(urdf_path).exists():
                 base_model = PinocchioKinematicsModel(
                     urdf_path=urdf_path,
-                    end_effector_frame=self._ee_frame,
+                    frame_name=self._frame_name,
                     arm_joints=self.ARM_JOINTS,  # Lock gripper joints
                 )
         
@@ -487,6 +449,15 @@ class AIRBOTPlay(RobotArm):
             )
         else:
             self._properties.pop("gravity_coefficients_override", None)
+
+    @property
+    def gravity_compensation_scale(self) -> np.ndarray:
+        """Backward-compatible alias for per-joint gravity coefficients."""
+        return self.gravity_coefficients
+
+    @gravity_compensation_scale.setter
+    def gravity_compensation_scale(self, coefficients: np.ndarray | None) -> None:
+        self.gravity_coefficients = coefficients
     
     @property
     def gravity_coefficients_by_eef(self) -> dict[str, np.ndarray]:
@@ -555,7 +526,7 @@ class AIRBOTPlay(RobotArm):
     def end_effector_type(self) -> str | None:
         """Get end effector type name (cached, call query_properties() to refresh)."""
         return self._properties.get("end_effector_type")
-    
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
     
     def open(self) -> None:
@@ -570,33 +541,40 @@ class AIRBOTPlay(RobotArm):
                 f"Run: sudo ip link set {self._can_interface} up type can bitrate 1000000"
             )
         
-        # Create ASIO executor
-        self._executor = self._ah.create_asio_executor(1)
-        io_context = self._executor.get_io_context()
-        
-        # Create arm with motor configuration:
-        # Joints 0-2: OD motors (high torque)
-        # Joints 3-5: DM motors (wrist)
-        # No end-effector, no gripper motor
-        self._arm = self._ah.Play.create(
-            self._ah.MotorType.OD,
-            self._ah.MotorType.OD,
-            self._ah.MotorType.OD,
-            self._ah.MotorType.DM,
-            self._ah.MotorType.DM,
-            self._ah.MotorType.DM,
-            self._ah.EEFType.NA,
-            self._ah.MotorType.NA,
-        )
-        
-        # Initialize arm
-        if not self._arm.init(io_context, self._can_interface, self._control_frequency):
+        try:
+            self._executor = self._ah.create_asio_executor(1)
+            io_context = self._executor.get_io_context()
+
+            # Create arm with motor configuration:
+            # Joints 0-2: OD motors (high torque)
+            # Joints 3-5: DM motors (wrist)
+            # No end-effector, no gripper motor
+            self._arm = self._ah.Play.create(
+                self._ah.MotorType.OD,
+                self._ah.MotorType.OD,
+                self._ah.MotorType.OD,
+                self._ah.MotorType.DM,
+                self._ah.MotorType.DM,
+                self._ah.MotorType.DM,
+                self._ah.EEFType.NA,
+                self._ah.MotorType.NA,
+            )
+
+            # Initialize arm
+            initialized = self._arm.init(
+                io_context,
+                self._can_interface,
+                self._control_frequency,
+            )
+            if not initialized:
+                raise RuntimeError(
+                    f"Failed to initialize AIRBOT arm on {self._can_interface}. "
+                    "Check CAN connection and motor power."
+                )
+        except Exception:
             self._arm = None
             self._executor = None
-            raise RuntimeError(
-                f"Failed to initialize AIRBOT arm on {self._can_interface}. "
-                "Check CAN connection and motor power."
-            )
+            raise
         
         self._is_open = True
     
@@ -604,25 +582,23 @@ class AIRBOTPlay(RobotArm):
         """Close connection to AIRBOT arm."""
         if not self._is_open:
             return
-        
-        if self._is_enabled:
-            self.disable()
-        
-        if self._arm is not None:
-            self._arm.uninit()
-            self._arm = None
-        
-        self._executor = None
-        self._is_open = False
+        try:
+            if self._is_enabled:
+                self.disable()
+            if self._arm is not None:
+                self._arm.uninit()
+                self._arm = None
+        finally:
+            self._executor = None
+            self._is_open = False
     
     def enable(self) -> bool:
         """Enable AIRBOT motors."""
         if not self._is_open or self._arm is None:
             return False
-        
-        self._arm.enable()
-        self._is_enabled = True
-        return True
+        enabled = self._arm.enable()
+        self._is_enabled = bool(enabled)
+        return self._is_enabled
     
     def disable(self) -> None:
         """Disable AIRBOT motors (safe state)."""
@@ -630,8 +606,8 @@ class AIRBOTPlay(RobotArm):
             # First, switch to PVT mode and go to safe position if needed
             if self._control_mode == ControlMode.FREE_DRIVE:
                 self._arm.set_param(
-                    "arm.control_mode", 
-                    self._ah.MotorControlMode.PVT
+                    "arm.control_mode",
+                    self._ah.MotorControlMode.PVT,
                 )
             self._arm.disable()
         
@@ -678,7 +654,6 @@ class AIRBOTPlay(RobotArm):
         """Set the control mode."""
         if not self._is_enabled or self._arm is None:
             return False
-        
         if mode == ControlMode.FREE_DRIVE:
             # MIT mode for free drive (torque control)
             self._arm.set_param(
@@ -723,7 +698,6 @@ class AIRBOTPlay(RobotArm):
         state = self._arm.state()
         if not state.is_valid:
             return
-        
         q = np.array(state.pos)
         
         # Gravity compensation (already includes AIRBOT EEF coefficients)
@@ -773,12 +747,18 @@ class AIRBOTPlay(RobotArm):
         if cmd.feedforward is not None:
             tau_ff = np.asarray(cmd.feedforward, dtype=np.float64)
         
+        # The AIRBOT MIT controller expects fixed per-joint gains in target-
+        # tracking mode; ignore caller-provided gains and always send the
+        # controller-approved arrays.
+        kp = self.TARGET_TRACKING_KP.copy()
+        kd = self.TARGET_TRACKING_KD.copy()
+        
         self._arm.mit(
             cmd.position_target.tolist(),
             cmd.velocity_target.tolist(),
             tau_ff.tolist(),
-            cmd.kp.tolist(),
-            cmd.kd.tolist(),
+            kp.tolist(),
+            kd.tolist(),
         )
     
     # ── PVT Mode (Position-Velocity-Torque) ───────────────────────────────
@@ -801,7 +781,7 @@ class AIRBOTPlay(RobotArm):
         """
         if self._arm is None:
             return
-        
+
         self._arm.pvt(
             np.asarray(position).tolist(),
             np.asarray(velocity).tolist(),
@@ -837,7 +817,7 @@ class AIRBOTPlay(RobotArm):
             state = self._arm.state()
             if state.is_valid:
                 self._arm.pvt(home_pos, move_vel, move_tau)
-                
+
                 # Check if at home
                 if all(abs(p) < 0.01 for p in state.pos):
                     return True
@@ -845,6 +825,15 @@ class AIRBOTPlay(RobotArm):
             time.sleep(self._dt)
         
         return False
+
+    def move_to_zero(
+        self,
+        timeout: float = 10.0,
+        tolerance: float = 0.01,
+        dt: float = 0.004,
+    ) -> bool:
+        del tolerance, dt
+        return self.move_to_home(timeout=timeout)
     
     # ── Convenience Methods ───────────────────────────────────────────────
     
@@ -907,6 +896,11 @@ class AIRBOTPlay(RobotArm):
                 pass  # LED identification still works even if gravity comp fails
         
         return led_ok
+
+    def identify_step(self) -> None:
+        """Keep the arm backdrivable while identification is active."""
+        if self._is_open and self._is_enabled and self._control_mode == ControlMode.FREE_DRIVE:
+            self.step_free_drive()
     
     def identify_stop(
         self, 

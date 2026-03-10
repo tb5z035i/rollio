@@ -10,6 +10,7 @@ AVAILABLE_TESTS: dict[str, str] = {
     "airbot_play_gravity_compensation": "Test AIRBOT Play gravity compensation (free drive mode)",
     "airbot_play_identify": "Test AIRBOT Play LED identification (blink orange)",
     "airbot_play_sine_swing": "Move to zero then swing one joint with a sine wave",
+    "airbot_g2_sine_position": "Run AIRBOT G2 sine target-position test using AIRBOTG2",
 }
 
 
@@ -35,6 +36,9 @@ def run_test(test_name: str, **kwargs) -> bool:
     """
     if test_name.startswith("airbot_play_"):
         from rollio.tests.airbot_play import run_test as run_airbot_test
+        return run_airbot_test(test_name, **kwargs)
+    if test_name.startswith("airbot_g2_"):
+        from rollio.tests.airbot_g2 import run_test as run_airbot_test
         return run_airbot_test(test_name, **kwargs)
     
     print(f"Unknown test: {test_name}")

@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from rollio.config.schema import CameraConfig, RobotConfig, RollioConfig
-from rollio.robot import AIRBOTPlay, RobotArm
+from rollio.robot import AIRBOTE2B, AIRBOTG2, AIRBOTPlay, RobotArm
 from rollio.robot.pseudo_robot import PseudoRobotArm
 from rollio.sensors import ImageSensor, PseudoCamera, RealSenseCamera, V4L2Camera
 
@@ -130,6 +130,31 @@ def _build_airbot_robot(robot_cfg: RobotConfig) -> RobotArm:
     return AIRBOTPlay(**kwargs)
 
 
+def _build_airbot_e2b_robot(robot_cfg: RobotConfig) -> RobotArm:
+    if AIRBOTE2B is None:
+        raise ImportError("AIRBOTE2B support is not available in this environment")
+    kwargs = dict(robot_cfg.options)
+    kwargs.setdefault("can_interface", robot_cfg.device or "can0")
+    return AIRBOTE2B(**kwargs)
+
+
+def _build_airbot_g2_robot(robot_cfg: RobotConfig) -> RobotArm:
+    if AIRBOTG2 is None:
+        raise ImportError("AIRBOTG2 support is not available in this environment")
+    kwargs = dict(robot_cfg.options)
+    kwargs.setdefault("can_interface", robot_cfg.device or "can0")
+    return AIRBOTG2(**kwargs)
+
+
+def _apply_robot_config_metadata(robot: RobotArm, robot_cfg: RobotConfig) -> RobotArm:
+    robot.info.robot_type = robot_cfg.type
+    robot.info.n_dof = robot_cfg.num_joints
+    robot.info.properties["config_name"] = robot_cfg.name
+    robot.info.properties["config_role"] = robot_cfg.role
+    robot.info.properties["config_device"] = robot_cfg.device
+    return robot
+
+
 def ensure_default_device_factories() -> None:
     """Register the built-in camera and robot factories once."""
     global _DEFAULT_FACTORIES_REGISTERED
@@ -142,6 +167,8 @@ def ensure_default_device_factories() -> None:
 
     register_robot_factory("pseudo", _build_pseudo_robot, replace=True)
     register_robot_factory("airbot_play", _build_airbot_robot, replace=True)
+    register_robot_factory("airbot_e2b", _build_airbot_e2b_robot, replace=True)
+    register_robot_factory("airbot_g2", _build_airbot_g2_robot, replace=True)
 
     _DEFAULT_FACTORIES_REGISTERED = True
 
@@ -171,7 +198,7 @@ def build_robot_from_config(robot_cfg: RobotConfig) -> RobotArm:
             f"Unsupported robot type: {robot_cfg.type}. "
             f"Registered robot types: {known or '(none)'}"
         ) from exc
-    return factory(robot_cfg)
+    return _apply_robot_config_metadata(factory(robot_cfg), robot_cfg)
 
 
 def build_cameras_from_config(cfg: RollioConfig) -> dict[str, ImageSensor]:

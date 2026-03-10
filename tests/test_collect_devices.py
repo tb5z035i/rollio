@@ -65,6 +65,10 @@ def test_custom_factories_build_devices_from_config() -> None:
 
     assert camera.info().name == "cam_ext-preview"
     assert robot.info.name == "arm_ext-leader"
+    assert robot.info.robot_type == "test_custom_robot"
+    assert robot.info.properties["config_name"] == "arm_ext"
+    assert robot.info.properties["config_role"] == "leader"
+    assert robot.direct_map_allowlist == ("test_custom_robot",)
 
 
 def test_runtime_accepts_registered_backend_types(tmp_path: Path) -> None:

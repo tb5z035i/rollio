@@ -52,7 +52,9 @@ class LeRobotV21Writer:
         self._total_frames = 0
         self._camera_names: list[str] = []
         self._robot_names: list[str] = []
-        self._num_joints = 0
+        self._robot_state_shapes: dict[str, dict[str, int]] = {}
+        self._action_layout: list[dict[str, int | str]] = []
+        self._action_dim = 0
         self._camera_configs = camera_configs or {}
         self._video_codec = get_rgb_codec_option(video_codec)
         self._depth_codec = get_depth_codec_option(depth_codec)
@@ -66,14 +68,7 @@ class LeRobotV21Writer:
         chunk = f"chunk-{idx // 1000:03d}"
 
         # Discover structure from first episode
-        if not self._camera_names:
-            self._camera_names = list(ep.camera_frames.keys())
-        if not self._robot_names and ep.robot_states:
-            self._robot_names = list(ep.robot_states.keys())
-            first_rob = next(iter(ep.robot_states.values()))
-            if first_rob:
-                self._num_joints = len(first_rob[0][1].get(
-                    "position", np.zeros(0)))
+        self._learn_schema_from_episode(ep)
 
         # ── Write video files ────────────────────────────────────
         for cam_name, frames_list in ep.camera_frames.items():
@@ -235,12 +230,11 @@ class LeRobotV21Writer:
 
         # Collect state arrays per robot
         for rob_name in self._robot_names:
-            for key in ("position", "velocity", "effort"):
+            for key in self._robot_state_shapes.get(rob_name, {}):
                 col = f"observation.state.{rob_name}.{key}"
                 rows[col] = []
 
-        # Action = next position (shifted by 1 step) for the first robot
-        if self._robot_names:
+        if self._action_dim > 0:
             rows["action"] = []
 
         sampled_states: dict[str, list[dict[str, np.ndarray]]] = {}
@@ -248,6 +242,16 @@ class LeRobotV21Writer:
             state_list = ep.robot_states.get(rob_name, [])
             sampled_states[rob_name] = [
                 self._sample_state_at(state_list, ts)
+                for ts in timestamps
+            ]
+
+        sampled_actions: dict[str, list[np.ndarray]] = {}
+        for entry in self._action_layout:
+            pair_name = str(entry["pair_name"])
+            dim = int(entry["dim"])
+            pair_actions = ep.pair_actions.get(pair_name, [])
+            sampled_actions[pair_name] = [
+                self._sample_vector_at(pair_actions, ts, dim)
                 for ts in timestamps
             ]
 
@@ -259,19 +263,19 @@ class LeRobotV21Writer:
 
             for rob_name in self._robot_names:
                 st = sampled_states[rob_name][i]
-                for key in ("position", "velocity", "effort"):
+                for key, dim in self._robot_state_shapes.get(rob_name, {}).items():
                     col = f"observation.state.{rob_name}.{key}"
-                    default = np.zeros(self._num_joints, np.float32)
+                    default = np.zeros(dim, np.float32)
                     rows[col].append(st.get(key, default).tolist())
 
-            # Action = next sampled position of the first robot.
-            if self._robot_names:
-                first_rob = self._robot_names[0]
-                next_i = min(i + 1, n_rows - 1)
-                ns = sampled_states[first_rob][next_i]
-                rows["action"].append(
-                    ns.get("position", np.zeros(self._num_joints, np.float32)).tolist()
-                )
+            if self._action_dim > 0:
+                action = np.zeros(self._action_dim, dtype=np.float32)
+                for entry in self._action_layout:
+                    pair_name = str(entry["pair_name"])
+                    start = int(entry["start"])
+                    stop = int(entry["stop"])
+                    action[start:stop] = sampled_actions[pair_name][i][: stop - start]
+                rows["action"].append(action.tolist())
 
         table = pa.table(rows)
         pq.write_table(table, str(path))
@@ -282,11 +286,7 @@ class LeRobotV21Writer:
         timestamp: float,
     ) -> dict[str, np.ndarray]:
         if not state_list:
-            return {
-                "position": np.zeros(self._num_joints, np.float32),
-                "velocity": np.zeros(self._num_joints, np.float32),
-                "effort": np.zeros(self._num_joints, np.float32),
-            }
+            return {}
 
         state_timestamps = np.asarray([ts for ts, _ in state_list], dtype=np.float64)
         idx = int(np.searchsorted(state_timestamps, timestamp, side="left"))
@@ -300,9 +300,33 @@ class LeRobotV21Writer:
             chosen = state_list[idx - 1][1] if abs(timestamp - prev_ts) <= abs(next_ts - timestamp) else state_list[idx][1]
 
         return {
-            key: np.asarray(value, dtype=np.float32)
+            key: np.asarray(value, dtype=np.float32).reshape(-1)
             for key, value in chosen.items()
         }
+
+    def _sample_vector_at(
+        self,
+        vectors: list[tuple[float, np.ndarray]],
+        timestamp: float,
+        dim: int,
+    ) -> np.ndarray:
+        if not vectors:
+            return np.zeros(dim, dtype=np.float32)
+
+        vector_timestamps = np.asarray([ts for ts, _ in vectors], dtype=np.float64)
+        idx = int(np.searchsorted(vector_timestamps, timestamp, side="left"))
+        if idx <= 0:
+            chosen = vectors[0][1]
+        elif idx >= len(vectors):
+            chosen = vectors[-1][1]
+        else:
+            prev_ts = vector_timestamps[idx - 1]
+            next_ts = vector_timestamps[idx]
+            chosen = vectors[idx - 1][1] if abs(timestamp - prev_ts) <= abs(next_ts - timestamp) else vectors[idx][1]
+        out = np.zeros(dim, dtype=np.float32)
+        chosen_arr = np.asarray(chosen, dtype=np.float32).reshape(-1)
+        out[: min(dim, chosen_arr.size)] = chosen_arr[:dim]
+        return out
 
     def _target_row_count(self, ep: EpisodeData) -> int:
         return len(self._target_timestamps(ep))
@@ -341,17 +365,17 @@ class LeRobotV21Writer:
             }
 
         for rob_name in self._robot_names:
-            for prop in ("position", "velocity", "effort"):
+            for prop, dim in self._robot_state_shapes.get(rob_name, {}).items():
                 key = f"observation.state.{rob_name}.{prop}"
                 features[key] = {
                     "dtype": "float32",
-                    "shape": [self._num_joints],
+                    "shape": [dim],
                 }
 
-        if self._robot_names:
+        if self._action_dim > 0:
             features["action"] = {
                 "dtype": "float32",
-                "shape": [self._num_joints],
+                "shape": [self._action_dim],
             }
 
         info = {
@@ -364,6 +388,26 @@ class LeRobotV21Writer:
             "video_path": "videos/chunk-{episode_chunk:03d}/"
                           "{video_key}/episode_{episode_index:06d}{video_extension}",
             "features": features,
+            "action_layout": self._action_layout,
         }
         (meta_dir / "info.json").write_text(
             json.dumps(info, indent=2) + "\n")
+
+    def _learn_schema_from_episode(self, ep: EpisodeData) -> None:
+        if not self._camera_names:
+            self._camera_names = list(ep.camera_frames.keys())
+        if not self._robot_names and ep.robot_states:
+            self._robot_names = list(ep.robot_states.keys())
+
+        for rob_name in ep.robot_states:
+            if rob_name not in self._robot_names:
+                self._robot_names.append(rob_name)
+            shapes = self._robot_state_shapes.setdefault(rob_name, {})
+            for _, state in ep.robot_states.get(rob_name, []):
+                for key, value in state.items():
+                    if key not in shapes:
+                        shapes[key] = int(np.asarray(value).reshape(-1).size)
+
+        if ep.action_layout:
+            self._action_layout = [dict(entry) for entry in ep.action_layout]
+            self._action_dim = sum(int(entry["dim"]) for entry in self._action_layout)
