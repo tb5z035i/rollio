@@ -44,7 +44,7 @@ def scan_robots() -> list[DetectedRobot]:
             pass
 
     try:
-        from rollio.robot.airbot_shared import scan_airbot_detected_robots
+        from rollio.robot.airbot.shared import scan_airbot_detected_robots
 
         found.extend(scan_airbot_detected_robots())
     except ImportError:

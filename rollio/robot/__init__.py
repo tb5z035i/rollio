@@ -29,13 +29,17 @@ from rollio.robot.scanner import DetectedRobot, scan_robots
 
 # Optional imports for hardware-specific implementations
 try:
-    from rollio.robot.airbot_play import AIRBOTPlay, is_airbot_available
+    from rollio.robot.airbot.shared import is_airbot_available
 except ImportError:
-    AIRBOTPlay = None  # type: ignore
     is_airbot_available = lambda: False  # type: ignore
 
 try:
-    from rollio.robot.airbot_eef import AIRBOTE2B, AIRBOTG2
+    from rollio.robot.airbot.play import AIRBOTPlay
+except ImportError:
+    AIRBOTPlay = None  # type: ignore
+
+try:
+    from rollio.robot.airbot.eef import AIRBOTE2B, AIRBOTG2
 except ImportError:
     AIRBOTE2B = None  # type: ignore
     AIRBOTG2 = None  # type: ignore
