@@ -162,7 +162,6 @@ def _help_panel_lines(
         f"  {start_key:<8} start/pause/continue",
         "  m        render mode",
         "  q        quit",
-        "",
         "\x1b[1mWorkflow\x1b[0m",
         "  1. start replay",
         "  2. pause / continue",

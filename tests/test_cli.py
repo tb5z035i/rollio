@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from rollio import cli
+from rollio.config.schema import RollioConfig
 
 
 class _FakeConfig:
@@ -141,3 +142,78 @@ def test_setup_cli_rejects_second_running_setup(
     stderr = capsys.readouterr().err
     assert "Another rollio setup is already running." in stderr
     assert "1234" in stderr
+
+
+def test_replay_cli_dispatches_episode_path(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    fake_cfg = RollioConfig(
+        project_name="demo",
+        cameras=[],
+        robots=[],
+    )
+    config_path = tmp_path / "rollio_config.yaml"
+    config_path.write_text("project_name: demo\n")
+    episode_path = tmp_path / "episode_000123.parquet"
+    episode_path.write_text("placeholder")
+
+    calls: list[tuple[RollioConfig, Path]] = []
+
+    def fake_run_replay(cfg: RollioConfig, episode: str | Path) -> None:
+        calls.append((cfg, Path(episode)))
+
+    monkeypatch.setattr(RollioConfig, "load", staticmethod(lambda _path: fake_cfg))
+    monkeypatch.setitem(
+        sys.modules,
+        "rollio.tui.replay",
+        types.SimpleNamespace(run_replay=fake_run_replay),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rollio",
+            "replay",
+            str(episode_path),
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    cli.main()
+
+    assert calls == [(fake_cfg, episode_path)]
+    stdout = capsys.readouterr().out
+    assert "Loaded config" in stdout
+    assert "Replay episode:" in stdout
+    assert "Starting replay TUI" in stdout
+
+
+def test_replay_cli_rejects_missing_config(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    missing_config = tmp_path / "missing_rollio.yaml"
+    episode_path = tmp_path / "episode_000001.parquet"
+    episode_path.write_text("placeholder")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rollio",
+            "replay",
+            str(episode_path),
+            "--config",
+            str(missing_config),
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="1"):
+        cli.main()
+
+    stdout = capsys.readouterr().out
+    assert "Config not found" in stdout

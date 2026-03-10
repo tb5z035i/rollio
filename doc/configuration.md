@@ -50,6 +50,27 @@ After saving, start data collection with:
 rollio collect --config rollio_config.yaml
 ```
 
+To replay one recorded episode later, point Rollio at the saved episode parquet:
+
+```
+rollio replay ~/rollio_data/<project_name>/data/chunk-000/episode_000000.parquet \
+  --config rollio_config.yaml
+```
+
+The replay TUI reuses the configured `start_stop` key as a toggle:
+
+- idle → start replay
+- playing → pause replay
+- paused → continue replay
+
+During replay, Rollio:
+
+- replays recorded camera outputs on screen,
+- opens all configured robots,
+- commands only follower robots using the recorded action stream,
+- shows both recorded robot states and live hardware robot states, and
+- after the replay finishes, slowly moves followers back to the episode start.
+
 ---
 
 ## Top-level fields
