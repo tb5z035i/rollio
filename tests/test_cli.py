@@ -1,9 +1,12 @@
 """Tests for rollio CLI argument handling."""
 from __future__ import annotations
 
+import contextlib
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 from rollio import cli
 
@@ -101,3 +104,40 @@ def test_setup_cli_defaults_to_no_simulated_devices(
     cli.main()
 
     assert calls == [(str(output_path), 0, 0)]
+
+
+def test_setup_cli_rejects_second_running_setup(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("run_wizard should not be called when setup lock is held")
+
+    @contextlib.contextmanager
+    def fake_setup_lock():
+        raise cli.SetupAlreadyRunningError(
+            "Another rollio setup is already running. Lock holder pid: 1234."
+        )
+        yield
+
+    monkeypatch.setattr(cli, "_acquire_setup_lock", fake_setup_lock)
+    monkeypatch.setitem(
+        sys.modules,
+        "rollio.tui.wizard",
+        types.SimpleNamespace(run_wizard=should_not_run),
+    )
+
+    output_path = tmp_path / "locked_rollio.yaml"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rollio", "setup", "--output", str(output_path)],
+    )
+
+    with pytest.raises(SystemExit, match="1"):
+        cli.main()
+
+    stderr = capsys.readouterr().err
+    assert "Another rollio setup is already running." in stderr
+    assert "1234" in stderr

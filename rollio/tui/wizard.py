@@ -17,6 +17,7 @@ import tty
 import cv2
 import numpy as np
 
+from rollio.collect import AsyncCollectionRuntime
 from rollio.config.pairing import (
     default_mapper_for_pair,
     suggest_teleop_pairs,
@@ -1189,6 +1190,67 @@ def _screen_teleop_pairs(
     return pairs
 
 
+def _camera_types_match(dev_dtype: str, cfg_type: str, cfg_channel: str) -> bool:
+    """Check if a detected camera matches a config entry."""
+    if dev_dtype == cfg_type:
+        return True
+    if cfg_type == "realsense" and dev_dtype.startswith("realsense_"):
+        return dev_dtype.replace("realsense_", "") == cfg_channel
+    return False
+
+
+def _match_camera_devices(
+    cam_configs: list[CameraConfig],
+    cam_devs: list[DetectedDevice],
+) -> list[tuple[CameraConfig, DetectedDevice | None]]:
+    """Match configured cameras to detected devices for preview metadata."""
+    matched: list[tuple[CameraConfig, DetectedDevice | None]] = []
+    used_cam_devs: set[int] = set()
+    for cc in cam_configs:
+        matched_dev = None
+        for di, dev in enumerate(cam_devs):
+            if (
+                di not in used_cam_devs
+                and str(dev.device_id) == str(cc.device)
+                and _camera_types_match(dev.dtype, cc.type, cc.channel)
+            ):
+                matched_dev = dev
+                used_cam_devs.add(di)
+                break
+        if matched_dev is None:
+            for di, dev in enumerate(cam_devs):
+                if di not in used_cam_devs and _camera_types_match(dev.dtype, cc.type, cc.channel):
+                    matched_dev = dev
+                    used_cam_devs.add(di)
+                    break
+        matched.append((cc, matched_dev))
+    return matched
+
+
+def _match_robot_devices(
+    rob_configs: list[RobotConfig],
+    rob_devs: list[DetectedDevice],
+) -> list[tuple[RobotConfig, DetectedDevice | None]]:
+    """Match configured robots to detected devices for preview metadata."""
+    matched: list[tuple[RobotConfig, DetectedDevice | None]] = []
+    used_rob_devs: set[int] = set()
+    for rc in rob_configs:
+        matched_dev = None
+        for di, dev in enumerate(rob_devs):
+            if di not in used_rob_devs and str(dev.properties.get("can_interface", dev.device_id)) == str(rc.device):
+                matched_dev = dev
+                used_rob_devs.add(di)
+                break
+        if matched_dev is None:
+            for di, dev in enumerate(rob_devs):
+                if di not in used_rob_devs and dev.dtype == rc.type:
+                    matched_dev = dev
+                    used_rob_devs.add(di)
+                    break
+        matched.append((rc, matched_dev))
+    return matched
+
+
 def _screen_summary(term: _Term, out,
                     cam_configs: list[CameraConfig],
                     rob_configs: list[RobotConfig],
@@ -1208,54 +1270,8 @@ def _screen_summary(term: _Term, out,
 
     Returns True to save, False to cancel.
     """
-    # Build sensors from configs - match by (device_id + type) to ensure correct pairing
-    # Track which devices have been used to avoid double-matching
-    # Store (config, sensor, device) tuples for camera setting changes
-    cam_sensors: list[tuple[CameraConfig, any, DetectedDevice | None]] = []
-    used_cam_devs: set[int] = set()
-
-    def _types_match(dev_dtype: str, cfg_type: str, cfg_channel: str) -> bool:
-        """Check if device type matches config type, handling realsense channels."""
-        if dev_dtype == cfg_type:
-            return True
-        # Handle realsense_* device types matching "realsense" config type
-        if cfg_type == "realsense" and dev_dtype.startswith("realsense_"):
-            dev_channel = dev_dtype.replace("realsense_", "")
-            return dev_channel == cfg_channel
-        return False
-
-    for cc in cam_configs:
-        sensor = None
-        matched_dev = None
-        # Match by both device_id AND type for exact pairing
-        for di, d in enumerate(cam_devs):
-            if di not in used_cam_devs and str(d.device_id) == str(cc.device) and _types_match(d.dtype, cc.type, cc.channel):
-                sensor = _make_camera(d, cc.width, cc.height, cc.fps, cc.pixel_format)
-                matched_dev = d
-                used_cam_devs.add(di)
-                break
-        # Fallback: match by type only if exact match not found
-        if sensor is None:
-            for di, d in enumerate(cam_devs):
-                if di not in used_cam_devs and _types_match(d.dtype, cc.type, cc.channel):
-                    sensor = _make_camera(d, cc.width, cc.height, cc.fps, cc.pixel_format)
-                    matched_dev = d
-                    used_cam_devs.add(di)
-                    break
-        cam_sensors.append((cc, sensor, matched_dev))
-
-    rob_sensors = []
-    used_rob_devs: set[int] = set()
-    for rc in rob_configs:
-        sensor = None
-        matched_dev = None
-        for di, d in enumerate(rob_devs):
-            if di not in used_rob_devs and d.dtype == rc.type:
-                sensor = _make_robot(d)
-                matched_dev = d
-                used_rob_devs.add(di)
-                break
-        rob_sensors.append((rc, sensor, matched_dev))
+    cam_entries = _match_camera_devices(cam_configs, cam_devs)
+    rob_entries = _match_robot_devices(rob_configs, rob_devs)
 
     mode_idx = 0  # "true" (24-bit truecolor) for best preview quality
     show_debug = False
@@ -1263,8 +1279,9 @@ def _screen_summary(term: _Term, out,
     _fps = 0.0
     result = None
     _needs_clear = True
-    selected_cam = 0 if cam_sensors else -1  # Currently selected camera for editing
-    _needs_reopen: set[int] = set()  # Camera indices that need reopening
+    selected_cam = 0 if cam_entries else -1
+    _needs_restart = True
+    preview_runtime: AsyncCollectionRuntime | None = None
 
     def _draw_text_clear(buf, row: int, col: int, text: str, clear_w: int = 0):
         """Draw text and clear to specified width or end of line."""
@@ -1277,24 +1294,44 @@ def _screen_summary(term: _Term, out,
         else:
             buf.write(f"\x1b[{row};{col}H{text}\x1b[K\x1b[0m".encode())
 
+    def _build_preview_runtime() -> AsyncCollectionRuntime:
+        preview_fps = max([30, *[cfg.fps for cfg in cam_configs]])
+        preview_cfg = RollioConfig(
+            project_name=project_name,
+            fps=preview_fps,
+            mode=mode,
+            cameras=cam_configs,
+            robots=rob_configs,
+            teleop_pairs=teleop_pairs,
+            storage=StorageConfig(root=storage_root),
+            encoder=EncoderConfig(
+                video_codec=video_codec,
+                depth_codec=depth_codec,
+            ),
+        )
+        return AsyncCollectionRuntime.from_config(
+            preview_cfg,
+            scheduler_driver="asyncio",
+        )
+
     try:
         while result is None:
-            # Reopen cameras if needed
-            for ci in list(_needs_reopen):
-                cc, old_sensor, dev = cam_sensors[ci]
-                if old_sensor:
-                    try:
-                        old_sensor.close()
-                    except Exception:
-                        pass
-                new_sensor = _make_camera(dev, cc.width, cc.height, cc.fps,
-                                          cc.pixel_format) if dev else None
-                cam_sensors[ci] = (cc, new_sensor, dev)
-                _needs_reopen.discard(ci)
+            if _needs_restart:
+                if preview_runtime is not None:
+                    preview_runtime.close()
+                preview_runtime = _build_preview_runtime()
+                preview_runtime.open()
                 _needs_clear = True
+                _needs_restart = False
 
             W, H = term.cols, term.rows
             buf = io.BytesIO()
+            latest_frames = preview_runtime.latest_frames() if preview_runtime is not None else {}
+            latest_robot_states = (
+                preview_runtime.latest_robot_states()
+                if preview_runtime is not None
+                else {}
+            )
 
             # FPS tracking
             _t_now = time.monotonic()
@@ -1343,7 +1380,7 @@ def _screen_summary(term: _Term, out,
                              f"│ \x1b[1;96mCameras (0)\x1b[0m",
                              info_w)
             row += 1
-            for ci, (cc, _, dev) in enumerate(cam_sensors):
+            for ci, (cc, _) in enumerate(cam_entries):
                 is_sel = (ci == selected_cam)
                 sel_mark = "\x1b[97;1m▸\x1b[0m" if is_sel else " "
                 highlight = "\x1b[97;1;44m" if is_sel else "\x1b[96m"
@@ -1371,7 +1408,7 @@ def _screen_summary(term: _Term, out,
                              f"│ \x1b[1;93mRobots ({len(rob_configs)})\x1b[0m",
                              info_w)
             row += 1
-            for ri, (rc, _, matched_rob_dev) in enumerate(rob_sensors):
+            for rc, matched_rob_dev in rob_entries:
                 role_clr = "92" if rc.role == "leader" else "33"
                 _draw_text_clear(buf, row, 2,
                                  f"│  \x1b[93m{rc.name[:12]:<12}\x1b[0m "
@@ -1424,8 +1461,8 @@ def _screen_summary(term: _Term, out,
             # ── Right panel: live camera previews ──
             preview_col = info_w + 2
             preview_row = 3
-            n_cams = len(cam_sensors)
-            n_robs = len(rob_sensors)
+            n_cams = len(cam_entries)
+            n_robs = len(rob_entries)
 
             # Calculate space for cameras and robots
             avail_h = max(4, H - 6)
@@ -1458,7 +1495,7 @@ def _screen_summary(term: _Term, out,
                 cell_h = max(4, cam_h_total // grid_rows)
                 preview_h_per = max(2, cell_h - 2)  # leave room for label
 
-                for ci, (cc, sensor, dev) in enumerate(cam_sensors):
+                for ci, (cc, _) in enumerate(cam_entries):
                     # Calculate grid position
                     grid_r = ci // grid_cols
                     grid_c = ci % grid_cols
@@ -1466,21 +1503,17 @@ def _screen_summary(term: _Term, out,
                     cell_col = preview_col + grid_c * cell_w
 
                     is_sel = (ci == selected_cam)
-
-                    if sensor is not None:
+                    frame = latest_frames.get(cc.name)
+                    if frame is not None:
                         try:
-                            _, frame = sensor.read()
-                            if frame is not None:
-                                # Calculate size preserving aspect
-                                fh, fw = frame.shape[:2]
-                                rw, rh = calc_render_size(
-                                    fw, fh, cell_w - 2, preview_h_per)
-                                # Use depth renderer for depth/IR channels
-                                if cc.channel in ("depth", "infrared") and frame.ndim == 2:
-                                    rendered = render_depth(frame, rw, rh, "turbo")
-                                else:
-                                    rendered = render_frame(frame, rw, rh, mode)
-                                buf.write(blit_frame(rendered, cell_row, cell_col + 1))
+                            fh, fw = frame.shape[:2]
+                            rw, rh = calc_render_size(
+                                fw, fh, cell_w - 2, preview_h_per)
+                            if cc.channel in ("depth", "infrared") and frame.ndim == 2:
+                                rendered = render_depth(frame, rw, rh, "turbo")
+                            else:
+                                rendered = render_frame(frame, rw, rh, mode)
+                            buf.write(blit_frame(rendered, cell_row, cell_col + 1))
                         except Exception:
                             _draw_text(buf, cell_row, cell_col + 1,
                                        f"\x1b[90m(err)\x1b[0m")
@@ -1510,34 +1543,27 @@ def _screen_summary(term: _Term, out,
                 preview_row += 1
                 bar_w = min(30, preview_w - 20)
 
-                for ri, (rc, sensor, _) in enumerate(rob_sensors):
+                for rc, _ in rob_entries:
                     role_clr = "92" if rc.role == "leader" else "33"
                     _draw_text(buf, preview_row, preview_col,
                                f"\x1b[{role_clr};1m{rc.name}\x1b[0m "
                                f"\x1b[90m({rc.num_joints}-DOF, {rc.role})\x1b[0m")
-
-                    if sensor is not None:
-                        try:
-                            _, state = sensor.read()
-                            pos = state.get("position", np.zeros(0))
-                            # Show all joints
-                            for j in range(len(pos)):
-                                p = pos[j]
-                                frac = float(np.clip((p + 2) / 4, 0, 1))
-                                bar_len = int(frac * bar_w)
-                                bar = "█" * bar_len + "░" * (bar_w - bar_len)
-                                _draw_text(buf, preview_row + 1 + j,
-                                           preview_col + 2,
-                                           f"j{j} \x1b[36m{p:+5.2f}\x1b[0m "
-                                           f"\x1b[33m{bar}\x1b[0m")
-                            preview_row += 1 + len(pos) + 1  # header + joints + spacing
-                        except Exception:
-                            _draw_text(buf, preview_row + 1, preview_col + 2,
-                                       "\x1b[90m(error)\x1b[0m")
-                            preview_row += 3
-                    else:
+                    try:
+                        state = latest_robot_states.get(rc.name, {})
+                        pos = state.get("position", np.zeros(0))
+                        for j in range(len(pos)):
+                            p = pos[j]
+                            frac = float(np.clip((p + 2) / 4, 0, 1))
+                            bar_len = int(frac * bar_w)
+                            bar = "█" * bar_len + "░" * (bar_w - bar_len)
+                            _draw_text(buf, preview_row + 1 + j,
+                                       preview_col + 2,
+                                       f"j{j} \x1b[36m{p:+5.2f}\x1b[0m "
+                                       f"\x1b[33m{bar}\x1b[0m")
+                        preview_row += 1 + len(pos) + 1
+                    except Exception:
                         _draw_text(buf, preview_row + 1, preview_col + 2,
-                                   "\x1b[90m(no preview)\x1b[0m")
+                                   "\x1b[90m(error)\x1b[0m")
                         preview_row += 3
 
             # Debug overlay
@@ -1548,8 +1574,8 @@ def _screen_summary(term: _Term, out,
             # ── Footer / controls ──
             footer_row = H - 2
             cam_controls = ""
-            if selected_cam >= 0 and cam_sensors[selected_cam][2]:
-                dev = cam_sensors[selected_cam][2]
+            if selected_cam >= 0 and cam_entries[selected_cam][1]:
+                dev = cam_entries[selected_cam][1]
                 if dev and dev.formats and (dev.dtype == "v4l2" or dev.dtype.startswith("realsense_")):
                     cam_controls = "\x1b[33m[f]\x1b[0m format  \x1b[33m[r]\x1b[0m resolution  "
             _draw_text_clear(buf, footer_row, 2,
@@ -1581,11 +1607,11 @@ def _screen_summary(term: _Term, out,
             # Camera selection with number keys
             elif key and key.isdigit():
                 idx = int(key) - 1
-                if 0 <= idx < len(cam_sensors):
+                if 0 <= idx < len(cam_entries):
                     selected_cam = idx
             # Format selection for selected camera
             elif key == "f" and selected_cam >= 0:
-                cc, sensor, dev = cam_sensors[selected_cam]
+                cc, dev = cam_entries[selected_cam]
                 if dev and dev.formats and (dev.dtype == "v4l2" or dev.dtype.startswith("realsense_")):
                     # Find current format index
                     cur_fmt_idx = 0
@@ -1601,11 +1627,11 @@ def _screen_summary(term: _Term, out,
                         if new_fmt.modes:
                             m = new_fmt.modes[0]
                             cc.width, cc.height, cc.fps = m.width, m.height, m.fps
-                        _needs_reopen.add(selected_cam)
+                        _needs_restart = True
                     _needs_clear = True
             # Resolution selection for selected camera
             elif key == "r" and selected_cam >= 0:
-                cc, sensor, dev = cam_sensors[selected_cam]
+                cc, dev = cam_entries[selected_cam]
                 if dev and dev.formats and (dev.dtype == "v4l2" or dev.dtype.startswith("realsense_")):
                     # Find current format and mode index
                     cur_fmt = None
@@ -1623,7 +1649,7 @@ def _screen_summary(term: _Term, out,
                         if new_idx is not None:
                             m = cur_fmt.modes[new_idx]
                             cc.width, cc.height, cc.fps = m.width, m.height, m.fps
-                            _needs_reopen.add(selected_cam)
+                            _needs_restart = True
                         _needs_clear = True
 
             # Throttle to ~30 FPS
@@ -1632,19 +1658,8 @@ def _screen_summary(term: _Term, out,
                 time.sleep(0.033 - _el)
 
     finally:
-        # Clean up sensors
-        for _, sensor, _ in cam_sensors:
-            if sensor is not None:
-                try:
-                    sensor.close()
-                except Exception:
-                    pass
-        for _, sensor, _ in rob_sensors:
-            if sensor is not None:
-                try:
-                    sensor.close()
-                except Exception:
-                    pass
+        if preview_runtime is not None:
+            preview_runtime.close()
 
     return result
 

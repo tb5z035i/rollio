@@ -1,0 +1,77 @@
+project_name: default
+description: ''
+fps: 30
+mode: teleop
+cameras:
+- name: cam_0
+  type: v4l2
+  device: 0
+  width: 1280
+  height: 960
+  fps: 30
+  pixel_format: MJPG
+  id_path: pci-0000:f1:00.4-usb-0:2:1.0
+  channel: color
+  options: {}
+  channels: []
+- name: cam_2
+  type: realsense
+  device: 335522070371:depth
+  width: 1280
+  height: 720
+  fps: 30
+  pixel_format: z16
+  id_path: ''
+  channel: depth
+  options: {}
+  channels: []
+- name: cam_3
+  type: realsense
+  device: 335522070371:color
+  width: 1920
+  height: 1080
+  fps: 30
+  pixel_format: bgr8
+  id_path: ''
+  channel: color
+  options: {}
+  channels: []
+robots:
+- name: arm_0
+  type: airbot_play
+  role: follower
+  num_joints: 6
+  device: can0
+  options: {}
+- name: arm_1
+  type: airbot_play
+  role: leader
+  num_joints: 6
+  device: can1
+  options: {}
+teleop_pairs:
+- name: pair_0
+  leader: arm_1
+  follower: arm_0
+  mapper: joint_direct
+storage:
+  root: ~/rollio_data
+  lerobot_version: v2.1
+encoder:
+  video_codec: h264_nvenc
+  depth_codec: ffv1
+  background_workers: 1
+upload:
+  enabled: false
+  endpoint: ''
+  api_key_env: ''
+async_pipeline:
+  export_queue_size: 4
+  telemetry_hz: 50
+  control_hz: 100
+  max_pending_episodes: 8
+  allow_drop_preview_frames: true
+controls:
+  start_stop: ' '
+  keep: k
+  discard: d

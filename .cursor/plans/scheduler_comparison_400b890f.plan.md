@@ -4,22 +4,22 @@ overview: Build a reusable hybrid scheduling architecture that uses asyncio for 
 todos:
   - id: define-device-adapters
     content: Introduce capability-based robot and camera adapters plus registries so new backends plug in without scheduler-specific conditionals.
-    status: in_progress
+    status: completed
   - id: build-async-control-core
     content: Build a shared async control core for teleop, free-drive refresh, and robot telemetry using ordered cooperative tasks.
-    status: pending
+    status: completed
   - id: add-camera-thread-bridge
     content: Wrap blocking camera backends in persistent capture threads with async-facing latest-frame access for the event loop.
-    status: pending
+    status: completed
   - id: compare-drivers
     content: Keep a round-robin baseline and instrument cadence, step time, and overruns to compare it with the asyncio driver.
-    status: pending
+    status: completed
   - id: wire-entry-points
     content: Reuse the shared architecture in both the wizard live preview and the collection runtime.
-    status: pending
+    status: completed
   - id: verify-extensibility
     content: Add tests proving that additional robot and camera backends can be registered without changing scheduler logic.
-    status: pending
+    status: completed
 isProject: false
 ---
 

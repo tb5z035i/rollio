@@ -76,6 +76,8 @@ DEPTH_CODEC_OPTIONS: tuple[CodecOption, ...] = (
 
 RGB_CODEC_ALIASES = {"mp4v": "mpeg4"}
 DEPTH_CODEC_ALIASES = {"raw": "rawvideo"}
+RGB_PROBE_SOURCE = "color=size=320x240:rate=1:color=black"
+DEPTH_PROBE_SOURCE = "nullsrc=size=16x16:rate=1"
 
 
 def parse_ffmpeg_encoder_names(output: str) -> set[str]:
@@ -94,6 +96,7 @@ def parse_ffmpeg_encoder_names(output: str) -> set[str]:
 def _probe_ffmpeg_encoder(codec: CodecOption) -> bool:
     """Quickly check whether FFmpeg can actually use this encoder here."""
     if codec.kind == "rgb":
+        # Hardware encoders such as NVENC can reject tiny synthetic frames.
         command = [
             "ffmpeg",
             "-hide_banner",
@@ -102,7 +105,7 @@ def _probe_ffmpeg_encoder(codec: CodecOption) -> bool:
             "-f",
             "lavfi",
             "-i",
-            "color=size=16x16:rate=1:color=black",
+            RGB_PROBE_SOURCE,
             "-frames:v",
             "1",
             "-c:v",
@@ -121,7 +124,7 @@ def _probe_ffmpeg_encoder(codec: CodecOption) -> bool:
             "-f",
             "lavfi",
             "-i",
-            "nullsrc=size=16x16:rate=1",
+            DEPTH_PROBE_SOURCE,
             "-vf",
             "format=gray16le",
             "-frames:v",

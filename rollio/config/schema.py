@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from collections import Counter
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -27,7 +28,7 @@ class CameraChannelConfig(BaseModel):
 
 class CameraConfig(BaseModel):
     name: str = "cam0"
-    type: Literal["pseudo", "v4l2", "realsense"] = "pseudo"
+    type: str = "pseudo"
     device: int | str = 0          # device index or path (for realsense: "serial:channel")
     width: int = 640               # primary channel width (for single-channel compat)
     height: int = 480              # primary channel height
@@ -35,16 +36,34 @@ class CameraConfig(BaseModel):
     pixel_format: str = "rgb24"    # primary channel format
     id_path: str = ""              # udev ID_PATH for stable device identification
     channel: str = "color"         # for realsense: "color", "depth", or "infrared"
+    options: dict[str, Any] = Field(default_factory=dict)  # backend-specific options
     channels: list[CameraChannelConfig] = Field(
         default_factory=list)      # multi-channel config (empty = single channel mode)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _validate_camera_type(cls, value: str) -> str:
+        sensor_type = str(value).strip()
+        if not sensor_type:
+            raise ValueError("Camera type must be a non-empty string")
+        return sensor_type
 
 
 class RobotConfig(BaseModel):
     name: str = "arm0"
-    type: Literal["pseudo", "airbot_play", "nero"] = "pseudo"
+    type: str = "pseudo"
     role: Literal["leader", "follower"] = "follower"
     num_joints: int = 6
     device: str = ""               # CAN bus, serial port, etc.
+    options: dict[str, Any] = Field(default_factory=dict)  # backend-specific options
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _validate_robot_type(cls, value: str) -> str:
+        robot_type = str(value).strip()
+        if not robot_type:
+            raise ValueError("Robot type must be a non-empty string")
+        return robot_type
 
 
 class StorageConfig(BaseModel):
@@ -118,6 +137,26 @@ class RollioConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_explicit_pairs(self) -> "RollioConfig":
+        duplicate_camera_names = [
+            name for name, count in Counter(camera.name for camera in self.cameras).items()
+            if count > 1
+        ]
+        if duplicate_camera_names:
+            raise ValueError(
+                "Camera names must be unique: "
+                + ", ".join(sorted(duplicate_camera_names))
+            )
+
+        duplicate_robot_names = [
+            name for name, count in Counter(robot.name for robot in self.robots).items()
+            if count > 1
+        ]
+        if duplicate_robot_names:
+            raise ValueError(
+                "Robot names must be unique: "
+                + ", ".join(sorted(duplicate_robot_names))
+            )
+
         if self.teleop_pairs:
             from rollio.config.pairing import validate_teleop_pairs
             validate_teleop_pairs(self.robots, self.teleop_pairs)

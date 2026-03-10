@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix fallback
+    fcntl = None  # type: ignore[assignment]
 
 # Try to import argcomplete for shell completion
 try:
@@ -13,21 +21,73 @@ except ImportError:
     ARGCOMPLETE_AVAILABLE = False
 
 
+class SetupAlreadyRunningError(RuntimeError):
+    """Raised when another setup wizard instance already holds the lock."""
+
+
+def _setup_lock_path() -> Path:
+    """Return the per-user lock file path for the setup wizard."""
+    runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return runtime_dir / "rollio-setup.lock"
+
+
+@contextlib.contextmanager
+def _acquire_setup_lock():
+    """Prevent concurrent setup wizard instances for the same user session."""
+    if fcntl is None:
+        yield
+        return
+
+    lock_path = _setup_lock_path()
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            lock_file.seek(0)
+            holder = lock_file.read().strip()
+            message = "Another rollio setup is already running."
+            if holder:
+                message += f" Lock holder pid: {holder}."
+            raise SetupAlreadyRunningError(message) from exc
+
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+
+        try:
+            yield
+        finally:
+            try:
+                lock_file.seek(0)
+                lock_file.truncate()
+                lock_file.flush()
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
 def _cmd_setup(args: argparse.Namespace) -> None:
     """Run the interactive TUI setup wizard."""
-    from rollio.tui.wizard import run_wizard
-
     out_path = Path(args.output)
     if out_path.exists() and not args.force:
         print(f"Config file already exists: {out_path}")
         print("Use --force to overwrite, or choose a different -o path.")
         sys.exit(1)
 
-    cfg = run_wizard(
-        str(out_path),
-        simulated_cameras=max(0, args.sim_cameras),
-        simulated_arms=max(0, args.sim_arms),
-    )
+    try:
+        with _acquire_setup_lock():
+            from rollio.tui.wizard import run_wizard
+
+            cfg = run_wizard(
+                str(out_path),
+                simulated_cameras=max(0, args.sim_cameras),
+                simulated_arms=max(0, args.sim_arms),
+            )
+    except SetupAlreadyRunningError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
 
     if cfg is None:
         print("Setup cancelled.")

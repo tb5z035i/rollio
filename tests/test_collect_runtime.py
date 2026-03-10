@@ -53,7 +53,12 @@ class LeaderTrajectoryDriver(threading.Thread):
                 return
 
 
-def _build_runtime(root: Path, export_delay_sec: float = 1.0) -> AsyncCollectionRuntime:
+def _build_runtime(
+    root: Path,
+    export_delay_sec: float = 1.0,
+    *,
+    scheduler_driver: str = "asyncio",
+) -> AsyncCollectionRuntime:
     cfg = RollioConfig(
         project_name="async_simulated_collection",
         fps=10,
@@ -90,7 +95,11 @@ def _build_runtime(root: Path, export_delay_sec: float = 1.0) -> AsyncCollection
             control_hz=100,
         ),
     )
-    return AsyncCollectionRuntime.from_config(cfg, export_delay_sec=export_delay_sec)
+    return AsyncCollectionRuntime.from_config(
+        cfg,
+        export_delay_sec=export_delay_sec,
+        scheduler_driver=scheduler_driver,
+    )
 
 
 def _last_position(episode, robot_name: str) -> np.ndarray:
@@ -190,4 +199,58 @@ def test_runtime_from_config_pairs_leaders_and_followers(tmp_path: Path) -> None
         assert runtime._teleop_pairs[1].mapper_mode == "pose_fk_ik"  # noqa: SLF001
     finally:
         # Runtime is not opened in this test, but close() remains idempotent.
+        runtime.close()
+
+
+def test_scheduler_metrics_are_exposed_for_asyncio_driver(tmp_path: Path) -> None:
+    runtime = _build_runtime(
+        tmp_path,
+        export_delay_sec=0.0,
+        scheduler_driver="asyncio",
+    )
+    driver_stop = threading.Event()
+    try:
+        runtime.open()
+        driver = LeaderTrajectoryDriver(runtime._robots["leader_a"], driver_stop, 0.0)  # noqa: SLF001
+        driver.start()
+        time.sleep(0.25)
+
+        metrics = runtime.scheduler_metrics()
+        driver_metrics = metrics["driver"]
+        camera_metrics = metrics["cameras"]
+
+        assert driver_metrics.driver_name == "asyncio"
+        assert driver_metrics.task_metrics["teleop-direct_pair"].run_count > 0
+        assert driver_metrics.task_metrics["robot-leader_a"].run_count > 0
+        assert driver_metrics.task_metrics["camera-cam_left"].run_count > 0
+        assert camera_metrics["cam_left"].captured_frames > 0
+    finally:
+        driver_stop.set()
+        runtime.close()
+
+
+def test_scheduler_metrics_are_exposed_for_round_robin_driver(tmp_path: Path) -> None:
+    runtime = _build_runtime(
+        tmp_path,
+        export_delay_sec=0.0,
+        scheduler_driver="round_robin",
+    )
+    driver_stop = threading.Event()
+    try:
+        runtime.open()
+        driver = LeaderTrajectoryDriver(runtime._robots["leader_a"], driver_stop, 0.0)  # noqa: SLF001
+        driver.start()
+        time.sleep(0.25)
+
+        metrics = runtime.scheduler_metrics()
+        driver_metrics = metrics["driver"]
+        camera_metrics = metrics["cameras"]
+
+        assert driver_metrics.driver_name == "round_robin"
+        assert driver_metrics.task_metrics["teleop-direct_pair"].run_count > 0
+        assert driver_metrics.task_metrics["robot-leader_a"].run_count > 0
+        assert driver_metrics.task_metrics["camera-cam_left"].run_count > 0
+        assert camera_metrics["cam_left"].captured_frames > 0
+    finally:
+        driver_stop.set()
         runtime.close()

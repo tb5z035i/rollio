@@ -6,7 +6,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -14,10 +13,12 @@ from rollio.config import suggest_teleop_pairs
 from rollio.config.schema import CameraConfig, RollioConfig, TeleopPairConfig
 from rollio.episode.recorder import EpisodeData
 from rollio.episode.writer import LeRobotV21Writer
-from rollio.robot import AIRBOTPlay, RobotArm
-from rollio.robot.pseudo_robot import PseudoRobotArm
-from rollio.sensors import ImageSensor, PseudoCamera, RealSenseCamera, V4L2Camera
+from rollio.robot import JointState, RobotArm
+from rollio.sensors import ImageSensor
 
+from .camera_bridge import FrameSourceMetrics, ThreadedCameraFrameSource
+from .devices import build_cameras_from_config, build_robots_from_config
+from .scheduler import DriverMetrics, ScheduledTask, build_scheduler_driver
 from .teleop import MapperMode, TeleopMapper, build_mapper
 
 
@@ -168,16 +169,17 @@ class AsyncEpisodeExporter:
         ] = queue.Queue(maxsize=max(1, queue_size))
         self._records: dict[int, ExportRecord] = {}
         self._export_delay_sec = max(0.0, export_delay_sec)
-        self._thread = threading.Thread(
-            target=self._run,
-            name="rollio-exporter",
-            daemon=True,
-        )
+        self._thread: threading.Thread | None = None
         self._started = False
 
     def start(self) -> None:
         if self._started:
             return
+        self._thread = threading.Thread(
+            target=self._run,
+            name="rollio-exporter",
+            daemon=True,
+        )
         self._thread.start()
         self._started = True
 
@@ -203,7 +205,9 @@ class AsyncEpisodeExporter:
         if not self._started:
             return
         self._queue.put((None, None))
-        self._thread.join(timeout=30.0)
+        if self._thread is not None:
+            self._thread.join(timeout=30.0)
+        self._thread = None
         self._started = False
 
     def records(self) -> dict[int, ExportRecord]:
@@ -229,57 +233,56 @@ class AsyncEpisodeExporter:
                 self._queue.task_done()
 
 
-class PeriodicWorker(threading.Thread):
-    """Runs a periodic task using blocking waits."""
-
-    def __init__(self, name: str, interval_sec: float, stop_event: threading.Event) -> None:
-        super().__init__(name=name, daemon=True)
-        self._interval_sec = max(interval_sec, 1e-4)
-        self._stop_event = stop_event
-
-    def step(self) -> None:
-        raise NotImplementedError
-
-    def run(self) -> None:
-        next_tick = time.monotonic()
-        while not self._stop_event.is_set():
-            self.step()
-            next_tick += self._interval_sec
-            remaining = next_tick - time.monotonic()
-            if remaining <= 0:
-                next_tick = time.monotonic()
-                continue
-            if self._stop_event.wait(remaining):
-                return
+def _joint_state_to_robot_state(robot: RobotArm, joint_state: JointState) -> dict[str, np.ndarray]:
+    robot_state: dict[str, np.ndarray] = {}
+    if joint_state.position is not None:
+        robot_state["position"] = joint_state.position
+        pose = robot.kinematics.forward_kinematics(joint_state.position)
+        robot_state["ee_position"] = pose.position.astype(np.float32)
+        robot_state["ee_quaternion"] = pose.quaternion.astype(np.float32)
+    if joint_state.velocity is not None:
+        robot_state["velocity"] = joint_state.velocity
+    if joint_state.effort is not None:
+        robot_state["effort"] = joint_state.effort
+    return robot_state
 
 
-class CameraCaptureWorker(PeriodicWorker):
-    """Captures frames from an ImageSensor."""
+class CameraIngestTask:
+    """Pull frames from a threaded camera source into runtime caches."""
 
     def __init__(
         self,
         camera_name: str,
-        camera: ImageSensor,
+        frame_source: ThreadedCameraFrameSource,
         runtime: "AsyncCollectionRuntime",
-        stop_event: threading.Event,
     ) -> None:
-        super().__init__(
-            name=f"camera-{camera_name}",
-            interval_sec=1.0 / max(camera.fps, 1),
-            stop_event=stop_event,
-        )
         self._camera_name = camera_name
-        self._camera = camera
+        self._frame_source = frame_source
         self._runtime = runtime
 
+    def scheduled_task(self) -> ScheduledTask:
+        return ScheduledTask(
+            name=f"camera-{self._camera_name}",
+            interval_sec=1.0 / max(self._frame_source.fps, 1),
+            step=self.step,
+        )
+
     def step(self) -> None:
-        ts, frame = self._camera.read()
-        self._runtime.update_latest_frame(self._camera_name, frame)
-        self._runtime.record_camera_frame(self._camera_name, ts, frame)
+        samples = self._frame_source.drain_samples()
+        if not samples:
+            return
+        latest = samples[-1]
+        self._runtime.update_latest_frame(self._camera_name, latest.frame)
+        for sample in samples:
+            self._runtime.record_camera_frame(
+                self._camera_name,
+                sample.timestamp,
+                sample.frame,
+            )
 
 
-class RobotTelemetryWorker(PeriodicWorker):
-    """Captures robot state into the current episode."""
+class RobotTelemetryTask:
+    """Capture robot state into runtime caches and the active episode."""
 
     def __init__(
         self,
@@ -287,54 +290,56 @@ class RobotTelemetryWorker(PeriodicWorker):
         robot: RobotArm,
         hz: int,
         runtime: "AsyncCollectionRuntime",
-        stop_event: threading.Event,
     ) -> None:
-        super().__init__(
-            name=f"robot-{robot_name}",
-            interval_sec=1.0 / max(hz, 1),
-            stop_event=stop_event,
-        )
         self._robot_name = robot_name
         self._robot = robot
+        self._interval_sec = 1.0 / max(hz, 1)
         self._runtime = runtime
+
+    def scheduled_task(self) -> ScheduledTask:
+        return ScheduledTask(
+            name=f"robot-{self._robot_name}",
+            interval_sec=self._interval_sec,
+            step=self.step,
+        )
 
     def step(self) -> None:
         joint_state = self._robot.read_joint_state()
-        robot_state: dict[str, np.ndarray] = {}
-        if joint_state.position is not None:
-            robot_state["position"] = joint_state.position
-            pose = self._robot.kinematics.forward_kinematics(joint_state.position)
-            robot_state["ee_position"] = pose.position.astype(np.float32)
-            robot_state["ee_quaternion"] = pose.quaternion.astype(np.float32)
-        if joint_state.velocity is not None:
-            robot_state["velocity"] = joint_state.velocity
-        if joint_state.effort is not None:
-            robot_state["effort"] = joint_state.effort
+        robot_state = _joint_state_to_robot_state(self._robot, joint_state)
         self._runtime.update_latest_robot_state(self._robot_name, robot_state)
-        self._runtime.record_robot_state(self._robot_name, joint_state.timestamp, robot_state)
+        self._runtime.record_robot_state(
+            self._robot_name,
+            joint_state.timestamp,
+            robot_state,
+        )
 
 
-class TeleopWorker(PeriodicWorker):
-    """Drives one follower from one leader using the selected mapper."""
+class TeleopTask:
+    """Drive one follower from one leader using the selected mapper."""
 
     def __init__(
         self,
         pair: TeleopPairBinding,
         hz: int,
         runtime: "AsyncCollectionRuntime",
-        stop_event: threading.Event,
     ) -> None:
-        super().__init__(
-            name=f"teleop-{pair.name}",
-            interval_sec=1.0 / max(hz, 1),
-            stop_event=stop_event,
-        )
         self._pair = pair
+        self._interval_sec = 1.0 / max(hz, 1)
         self._runtime = runtime
         self._mapper = pair.mapper()
         self._last_target: np.ndarray | None = None
 
+    def scheduled_task(self) -> ScheduledTask:
+        return ScheduledTask(
+            name=f"teleop-{self._pair.name}",
+            interval_sec=self._interval_sec,
+            step=self.step,
+        )
+
     def step(self) -> None:
+        # Refresh gravity compensation every control tick so the leader stays
+        # backdrivable while the operator drags it.
+        self._pair.leader.step_free_drive()
         command = self._mapper.map_command(
             self._pair.leader,
             self._pair.follower,
@@ -352,7 +357,7 @@ class TeleopWorker(PeriodicWorker):
 
 
 class AsyncCollectionRuntime:
-    """Async collection runtime with background export workers."""
+    """Collection runtime with a shared scheduler and camera bridges."""
 
     def __init__(
         self,
@@ -370,6 +375,8 @@ class AsyncCollectionRuntime:
         telemetry_hz: int = 50,
         control_hz: int = 100,
         export_delay_sec: float = 0.0,
+        scheduler_driver: str = "asyncio",
+        camera_queue_size: int = 4,
     ) -> None:
         self._cameras = cameras
         self._camera_configs = camera_configs
@@ -380,6 +387,8 @@ class AsyncCollectionRuntime:
         self._depth_codec = depth_codec
         self._telemetry_hz = telemetry_hz
         self._control_hz = control_hz
+        self._scheduler_driver_name = scheduler_driver
+        self._camera_queue_size = max(1, camera_queue_size)
         self._state_lock = threading.Lock()
         self._current_episode: EpisodeAccumulator | None = None
         self._pending_episode: RecordedEpisode | None = None
@@ -391,8 +400,8 @@ class AsyncCollectionRuntime:
             name: {} for name in robots
         }
         self._latest_pair_modes: dict[str, str] = {}
-        self._stop_event = threading.Event()
-        self._workers: list[threading.Thread] = []
+        self._frame_sources: dict[str, ThreadedCameraFrameSource] = {}
+        self._scheduler = None
         self._opened = False
         self._exporter = AsyncEpisodeExporter(
             root=export_root,
@@ -411,10 +420,15 @@ class AsyncCollectionRuntime:
         cls,
         cfg: RollioConfig,
         export_delay_sec: float = 0.0,
+        *,
+        scheduler_driver: str = "asyncio",
     ) -> "AsyncCollectionRuntime":
         cameras = build_cameras_from_config(cfg)
         robots = build_robots_from_config(cfg)
         teleop_pairs = build_teleop_pairs_from_config(cfg, robots)
+        camera_queue_size = max(4, cfg.fps)
+        if not cfg.async_pipeline.allow_drop_preview_frames:
+            camera_queue_size = max(camera_queue_size, cfg.fps * 2)
         return cls(
             cameras=cameras,
             camera_configs={camera_cfg.name: camera_cfg for camera_cfg in cfg.cameras},
@@ -430,6 +444,8 @@ class AsyncCollectionRuntime:
             telemetry_hz=cfg.async_pipeline.telemetry_hz,
             control_hz=cfg.async_pipeline.control_hz,
             export_delay_sec=export_delay_sec,
+            scheduler_driver=scheduler_driver,
+            camera_queue_size=camera_queue_size,
         )
 
     @property
@@ -454,11 +470,14 @@ class AsyncCollectionRuntime:
     def depth_codec(self) -> str:
         return self._depth_codec
 
+    @property
+    def scheduler_driver(self) -> str:
+        return self._scheduler_driver_name
+
     def open(self) -> None:
         if self._opened:
             return
-        for camera in self._cameras.values():
-            camera.open()
+
         for robot in self._robots.values():
             robot.open()
             robot.enable()
@@ -466,39 +485,55 @@ class AsyncCollectionRuntime:
             pair.leader.enter_free_drive()
             pair.follower.enter_target_tracking()
 
-        self._exporter.start()
-
-        self._workers = [
-            CameraCaptureWorker(name, camera, self, self._stop_event)
+        self._frame_sources = {
+            name: ThreadedCameraFrameSource(
+                name,
+                camera,
+                max_pending_frames=self._camera_queue_size,
+            )
             for name, camera in self._cameras.items()
-        ]
-        self._workers.extend(
-            RobotTelemetryWorker(name, robot, self._telemetry_hz, self, self._stop_event)
-            for name, robot in self._robots.items()
-        )
-        self._workers.extend(
-            TeleopWorker(pair, self._control_hz, self, self._stop_event)
-            for pair in self._teleop_pairs
-        )
+        }
+        for frame_source in self._frame_sources.values():
+            frame_source.open()
 
-        for worker in self._workers:
-            worker.start()
+        self._exporter.start()
+        tasks = self._build_scheduled_tasks()
+        self._scheduler = build_scheduler_driver(self._scheduler_driver_name, tasks)
+        self._scheduler.start()
         self._opened = True
 
     def close(self) -> None:
-        if not self._opened:
-            self._exporter.shutdown()
-            return
-        self._stop_event.set()
-        for worker in self._workers:
-            worker.join(timeout=5.0)
+        if self._scheduler is not None:
+            self._scheduler.close()
+            self._scheduler = None
+
+        for frame_source in self._frame_sources.values():
+            frame_source.close()
+        self._frame_sources = {}
+
         self._exporter.shutdown()
-        for camera in self._cameras.values():
-            camera.close()
+
         for robot in self._robots.values():
             robot.disable()
             robot.close()
+
         self._opened = False
+
+    def _build_scheduled_tasks(self) -> list[ScheduledTask]:
+        tasks: list[ScheduledTask] = []
+        tasks.extend(
+            TeleopTask(pair, self._control_hz, self).scheduled_task()
+            for pair in self._teleop_pairs
+        )
+        tasks.extend(
+            RobotTelemetryTask(name, robot, self._telemetry_hz, self).scheduled_task()
+            for name, robot in self._robots.items()
+        )
+        tasks.extend(
+            CameraIngestTask(name, frame_source, self).scheduled_task()
+            for name, frame_source in self._frame_sources.items()
+        )
+        return tasks
 
     def start_episode(self) -> int:
         with self._state_lock:
@@ -575,7 +610,10 @@ class AsyncCollectionRuntime:
     def export_status(self) -> tuple[int, int]:
         records = self._exporter.records().values()
         pending = sum(1 for record in records if not record.done_event.is_set())
-        completed = sum(1 for record in records if record.done_event.is_set() and record.error is None)
+        completed = sum(
+            1 for record in records
+            if record.done_event.is_set() and record.error is None
+        )
         return pending, completed
 
     def latest_frames(self) -> dict[str, np.ndarray | None]:
@@ -585,6 +623,25 @@ class AsyncCollectionRuntime:
     def latest_robot_states(self) -> dict[str, dict[str, np.ndarray]]:
         with self._state_lock:
             return {name: dict(state) for name, state in self._latest_robot_states.items()}
+
+    def latest_pair_modes(self) -> dict[str, str]:
+        with self._state_lock:
+            return dict(self._latest_pair_modes)
+
+    def scheduler_metrics(self) -> dict[str, DriverMetrics | dict[str, FrameSourceMetrics]]:
+        driver_metrics = (
+            self._scheduler.metrics()
+            if self._scheduler is not None
+            else DriverMetrics(driver_name=self._scheduler_driver_name, task_metrics={})
+        )
+        camera_metrics = {
+            name: frame_source.metrics()
+            for name, frame_source in self._frame_sources.items()
+        }
+        return {
+            "driver": driver_metrics,
+            "cameras": camera_metrics,
+        }
 
     def update_latest_frame(self, name: str, frame: np.ndarray) -> None:
         with self._state_lock:
@@ -616,88 +673,6 @@ class AsyncCollectionRuntime:
             episode.append_robot(name, ts, state)
 
 
-def build_cameras_from_config(cfg: RollioConfig) -> dict[str, ImageSensor]:
-    """Instantiate cameras from the existing setup-stage config."""
-
-    cameras: dict[str, ImageSensor] = {}
-    for cam_cfg in cfg.cameras:
-        if cam_cfg.type == "pseudo":
-            cameras[cam_cfg.name] = PseudoCamera(
-                name=cam_cfg.name,
-                width=cam_cfg.width,
-                height=cam_cfg.height,
-                fps=cam_cfg.fps,
-            )
-            continue
-        if cam_cfg.type == "v4l2":
-            cameras[cam_cfg.name] = V4L2Camera(
-                name=cam_cfg.name,
-                device=cam_cfg.device,
-                width=cam_cfg.width,
-                height=cam_cfg.height,
-                fps=cam_cfg.fps,
-                pixel_format=cam_cfg.pixel_format,
-            )
-            continue
-        if cam_cfg.type == "realsense":
-            channel = cam_cfg.channel or "color"
-            kwargs: dict[str, Any] = {
-                "name": cam_cfg.name,
-                "device": str(cam_cfg.device).split(":")[0],
-                "enable_color": channel == "color",
-                "enable_depth": channel == "depth",
-                "enable_infrared": channel == "infrared",
-                "preview_channel": channel,
-            }
-            if channel == "color":
-                kwargs.update(width=cam_cfg.width, height=cam_cfg.height, fps=cam_cfg.fps)
-            elif channel == "depth":
-                kwargs.update(
-                    width=cam_cfg.width,
-                    height=cam_cfg.height,
-                    fps=cam_cfg.fps,
-                    depth_width=cam_cfg.width,
-                    depth_height=cam_cfg.height,
-                    depth_fps=cam_cfg.fps,
-                    depth_format=cam_cfg.pixel_format,
-                )
-            else:
-                kwargs.update(
-                    width=cam_cfg.width,
-                    height=cam_cfg.height,
-                    fps=cam_cfg.fps,
-                    ir_width=cam_cfg.width,
-                    ir_height=cam_cfg.height,
-                    ir_fps=cam_cfg.fps,
-                    ir_format=cam_cfg.pixel_format,
-                )
-            cameras[cam_cfg.name] = RealSenseCamera(**kwargs)
-            continue
-        raise NotImplementedError(f"Unsupported camera type: {cam_cfg.type}")
-    return cameras
-
-
-def build_robots_from_config(cfg: RollioConfig) -> dict[str, RobotArm]:
-    """Instantiate robot arms from the existing setup-stage config."""
-
-    robots: dict[str, RobotArm] = {}
-    for robot_cfg in cfg.robots:
-        if robot_cfg.type == "pseudo":
-            robots[robot_cfg.name] = PseudoRobotArm(
-                name=robot_cfg.name,
-                n_dof=robot_cfg.num_joints,
-                noise_level=0.0,
-            )
-            continue
-        if robot_cfg.type == "airbot_play":
-            if AIRBOTPlay is None:
-                raise ImportError("AIRBOTPlay support is not available in this environment")
-            robots[robot_cfg.name] = AIRBOTPlay(can_interface=robot_cfg.device or "can0")
-            continue
-        raise NotImplementedError(f"Unsupported robot type: {robot_cfg.type}")
-    return robots
-
-
 def build_teleop_pairs_from_config(
     cfg: RollioConfig,
     robots: dict[str, RobotArm],
@@ -712,13 +687,20 @@ def build_teleop_pairs_from_config(
 
     pairs: list[TeleopPairBinding] = []
     for pair_cfg in pair_cfgs:
+        leader = robots[pair_cfg.leader]
+        follower = robots[pair_cfg.follower]
+        if leader is follower:
+            raise ValueError(
+                f"Tele-op pair '{pair_cfg.name}' resolves leader and follower "
+                "to the same runtime robot instance"
+            )
         pairs.append(
             TeleopPairBinding(
                 name=pair_cfg.name,
                 leader_name=pair_cfg.leader,
                 follower_name=pair_cfg.follower,
-                leader=robots[pair_cfg.leader],
-                follower=robots[pair_cfg.follower],
+                leader=leader,
+                follower=follower,
                 mapper_mode=pair_cfg.mapper,
             )
         )

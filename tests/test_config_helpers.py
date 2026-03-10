@@ -1,8 +1,11 @@
 """Tests for pairing and codec-related config helpers."""
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
+import rollio.episode.codecs as codecs
 from rollio.config import (
     CameraConfig,
     EncoderConfig,
@@ -97,3 +100,46 @@ def test_rollio_config_validates_explicit_pair_references() -> None:
 def test_codec_option_lookup_supports_aliases() -> None:
     assert get_rgb_codec_option("mp4v").name == "mpeg4"
     assert get_depth_codec_option("raw").name == "rawvideo"
+
+
+def test_available_rgb_codecs_keep_nvenc_when_probe_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    encoder_output = "\n".join([
+        "Encoders:",
+        " V..... h264_nvenc           NVIDIA NVENC H.264 encoder",
+        " V..... libx264              libx264 H.264 / AVC",
+        " V..... mpeg4                MPEG-4 part 2",
+    ])
+
+    def fake_run(
+        command: list[str],
+        capture_output: bool,
+        text: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, timeout
+        commands.append(command)
+        if command == ["ffmpeg", "-hide_banner", "-encoders"]:
+            return subprocess.CompletedProcess(command, 0, stdout=encoder_output, stderr="")
+        if command[0] == "ffmpeg":
+            if command[command.index("-c:v") + 1] == "h264_nvenc":
+                assert codecs.RGB_PROBE_SOURCE in command
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        raise AssertionError(f"Unexpected ffmpeg command: {command}")
+
+    monkeypatch.setattr(codecs.subprocess, "run", fake_run)
+    codecs.discover_ffmpeg_encoders.cache_clear()
+    codecs.available_rgb_codec_options.cache_clear()
+    try:
+        assert [option.name for option in codecs.available_rgb_codec_options()] == [
+            "h264_nvenc",
+            "libx264",
+            "mpeg4",
+        ]
+    finally:
+        codecs.discover_ffmpeg_encoders.cache_clear()
+        codecs.available_rgb_codec_options.cache_clear()
+
+    assert any(codecs.RGB_PROBE_SOURCE in command for command in commands)
