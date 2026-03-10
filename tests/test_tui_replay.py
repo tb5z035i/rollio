@@ -188,3 +188,26 @@ def test_replay_robot_panel_shows_recorded_and_live(monkeypatch) -> None:
     joined = "\n".join(lines)
     assert "REC" in joined
     assert "LIVE" in joined
+
+
+def test_render_preview_routes_depth_bgr_frames_to_depth_renderer(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[int, ...]]] = []
+
+    def fake_render_depth(frame, width, height, mode):
+        calls.append((mode, tuple(frame.shape)))
+        return b"depth"
+
+    monkeypatch.setattr(replay, "render_depth", fake_render_depth)
+    monkeypatch.setattr(replay, "render_frame", lambda *args, **kwargs: b"frame")
+
+    frame = np.zeros((6, 8, 3), dtype=np.uint8)
+    rendered = replay._render_preview(
+        frame,
+        width=4,
+        height=2,
+        render_mode="256",
+        channel="depth",
+    )
+
+    assert rendered == b"depth"
+    assert calls == [("turbo", (6, 8))]

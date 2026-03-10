@@ -325,6 +325,24 @@ def _resolve_camera_streams(
         raise ValueError("Dataset metadata features must be a mapping")
 
     cameras_by_name = {camera.name: camera for camera in cfg.cameras}
+    metadata_video_keys = {
+        str(feature_name).split(".", 2)[-1]
+        for feature_name in features
+        if str(feature_name).startswith("observation.images.")
+    }
+    missing_in_metadata = sorted(set(cameras_by_name) - metadata_video_keys)
+    if missing_in_metadata:
+        raise ValueError(
+            "Replay config cameras are missing from dataset metadata: "
+            + ", ".join(missing_in_metadata)
+        )
+    unexpected_in_metadata = sorted(metadata_video_keys - set(cameras_by_name))
+    if unexpected_in_metadata:
+        raise ValueError(
+            "Dataset metadata contains camera streams not present in replay config: "
+            + ", ".join(unexpected_in_metadata)
+        )
+
     streams: dict[str, ReplayCameraStream] = {}
     for feature_name, feature_payload in features.items():
         if not str(feature_name).startswith("observation.images."):
@@ -362,7 +380,7 @@ def _resolve_camera_streams(
         streams[video_key] = ReplayCameraStream(
             name=video_key,
             path=path.resolve(),
-            channel=channel,
+            channel=str(channel or "color"),
             extension=extension,
             codec=codec,
         )

@@ -122,6 +122,18 @@ def test_load_replay_episode_resolves_metadata_and_paths(tmp_path: Path) -> None
     )
 
 
+def test_load_replay_episode_rejects_camera_metadata_mismatch(tmp_path: Path) -> None:
+    cfg, episode_path = _build_replay_fixture(tmp_path)
+    cfg.cameras.append(CameraConfig(name="extra_cam", type="pseudo"))
+
+    try:
+        load_replay_episode(cfg, episode_path)
+    except ValueError as exc:
+        assert "missing from dataset metadata" in str(exc)
+    else:
+        raise AssertionError("Expected camera metadata mismatch to fail")
+
+
 def test_replay_runtime_drives_followers_and_returns_to_start(tmp_path: Path) -> None:
     cfg, episode_path = _build_replay_fixture(tmp_path)
     runtime = ReplayRuntime.from_config(

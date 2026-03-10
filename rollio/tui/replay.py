@@ -45,6 +45,10 @@ def _render_preview(
     if frame.ndim == 3 and frame.shape[2] == 1:
         depth_mode = "turbo" if channel == "depth" else "gray"
         return render_depth(frame[:, :, 0], width, height, depth_mode)
+    if channel in {"depth", "infrared"} and frame.ndim == 3 and frame.shape[2] == 3:
+        gray_frame = frame[:, :, 0]
+        depth_mode = "turbo" if channel == "depth" else "gray"
+        return render_depth(gray_frame, width, height, depth_mode)
     return render_frame(frame, width, height, render_mode)
 
 
