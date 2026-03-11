@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import time
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -20,7 +19,6 @@ from rollio.robot import (
     Pose,
     PseudoKinematicsModel,
     PseudoRobotArm,
-    RobotArm,
     RobotInfo,
     RobotState,
     TargetTrackingCommand,
@@ -669,6 +667,50 @@ class TestTargetTrackingMode:
         assert (
             final_error < initial_error
         ), f"Expected error to decrease: {initial_error:.3f} -> {final_error:.3f}"
+
+    def test_target_tracking_uses_slower_real_command_gaps(self) -> None:
+        """Slower real command cadence should advance the simulation further."""
+
+        def _make_robot() -> PseudoRobotArm:
+            pseudo = PseudoRobotArm(
+                name="timing_robot",
+                noise_level=0.0,
+                control_frequency=1000.0,
+            )
+            pseudo.open()
+            pseudo.enable()
+            pseudo.enter_target_tracking()
+            pseudo.set_joint_position(np.array([0.3, 0.2, -0.1, 0.05, 0.05, 0.0]))
+            return pseudo
+
+        target = np.zeros(6)
+        fast_robot = _make_robot()
+        slow_robot = _make_robot()
+        try:
+            for _ in range(10):
+                fast_robot.step_target_tracking(
+                    position_target=target,
+                    kp=80.0,
+                    kd=15.0,
+                    add_gravity_compensation=True,
+                )
+
+            for _ in range(10):
+                slow_robot.step_target_tracking(
+                    position_target=target,
+                    kp=80.0,
+                    kd=15.0,
+                    add_gravity_compensation=True,
+                )
+                time.sleep(0.01)
+
+            fast_error = np.linalg.norm(fast_robot.get_raw_position() - target)
+            slow_error = np.linalg.norm(slow_robot.get_raw_position() - target)
+
+            assert slow_error < fast_error
+        finally:
+            fast_robot.close()
+            slow_robot.close()
 
     def test_target_tracking_with_feedforward(self, robot: PseudoRobotArm) -> None:
         """Test target tracking with explicit feedforward."""

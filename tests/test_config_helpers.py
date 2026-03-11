@@ -145,8 +145,9 @@ def test_encoder_config_normalizes_legacy_aliases() -> None:
 def test_rollio_config_defaults_async_pipeline_to_default_control_hz() -> None:
     cfg = RollioConfig(project_name="demo")
 
-    assert cfg.async_pipeline.telemetry_hz == DEFAULT_CONTROL_HZ
-    assert cfg.async_pipeline.control_hz == DEFAULT_CONTROL_HZ
+    assert cfg.async_pipeline.telemetry_hz == DEFAULT_CONTROL_HZ  # pylint: disable=no-member
+    assert cfg.async_pipeline.control_hz == DEFAULT_CONTROL_HZ  # pylint: disable=no-member
+    assert cfg.async_pipeline.worker_bootstrap == []  # pylint: disable=no-member
 
 
 def test_rollio_config_save_and_load_persist_plotjuggler_flag(tmp_path: Path) -> None:

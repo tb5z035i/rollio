@@ -11,10 +11,16 @@ import termios
 import time
 import tty
 from collections import deque
+from typing import Protocol
 
 import numpy as np
 
-from rollio.collect import AsyncCollectionRuntime, RecordedEpisode
+from rollio.collect import (
+    CollectionRuntimeService,
+    RecordedEpisodeSummary,
+    RuntimeSnapshot,
+    create_runtime_service,
+)
 from rollio.config.schema import RollioConfig
 from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.tui.renderer import (
@@ -32,6 +38,13 @@ _SYNC_E = b"\x1b[?2026l"
 _ENTER_KEYS = frozenset({"\n", "\r"})
 _BACKSPACE_KEYS = frozenset({"\x7f", "\x08"})
 _AIRBOT_EEF_DISPLAY_MAX_M = 0.07
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_STATUS_TEXT_FG = "\x1b[38;5;250m"
+
+
+class _EpisodeSummaryLike(Protocol):
+    episode_index: int
+    duration: float
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -81,12 +94,35 @@ class _Term:
 
 
 def _visible_len(text: str) -> int:
-    return len(re.sub(r"\x1b\[[0-9;]*m", "", text))
+    return len(_ANSI_RE.sub("", text))
 
 
-def _pad_ansi(text: str, width: int) -> str:
-    visible = _visible_len(text)
-    return text + " " * max(0, width - visible)
+def _fit_ansi(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+
+    out: list[str] = []
+    visible = 0
+    idx = 0
+    while idx < len(text) and visible < width:
+        match = _ANSI_RE.match(text, idx)
+        if match is not None:
+            out.append(match.group(0))
+            idx = match.end()
+            continue
+        out.append(text[idx])
+        idx += 1
+        visible += 1
+
+    while idx < len(text):
+        match = _ANSI_RE.match(text, idx)
+        if match is None:
+            break
+        out.append(match.group(0))
+        idx = match.end()
+
+    out.append(" " * max(0, width - visible))
+    return "".join(out)
 
 
 def _key_label(binding: str) -> str:
@@ -139,9 +175,9 @@ def _write_lines(
 ) -> None:
     for offset in range(height):
         line = lines[offset] if offset < len(lines) else ""
-        padded = _pad_ansi(line, width)
+        padded = _fit_ansi(line, width)
         out.extend(f"\x1b[{row + offset};{col}H".encode())
-        out.extend(padded[: width + 80].encode())
+        out.extend(padded.encode())
         out.extend(b"\x1b[0m")
 
 
@@ -226,7 +262,7 @@ def _estimate_robot_panel_height(
 
 def _help_panel_lines(
     cfg: RollioConfig,
-    runtime: AsyncCollectionRuntime,
+    runtime: CollectionRuntimeService,
     panel_w: int,
     panel_h: int,
 ) -> list[str]:
@@ -257,21 +293,24 @@ def _help_panel_lines(
 
 
 def _state_line(
-    runtime: AsyncCollectionRuntime, pending_episode: RecordedEpisode | None
+    snapshot: RuntimeSnapshot,
+    pending_episode: _EpisodeSummaryLike | None,
 ) -> str:
-    if runtime.recording:
-        return f"REC {runtime.elapsed:.1f}s"
+    if snapshot.recording:
+        marker = "\x1b[91m●" if int(time.monotonic()) % 2 == 0 else "\x1b[90m○"
+        return f"{marker}{_STATUS_TEXT_FG} RECORDING {snapshot.elapsed:.1f}s"
     if pending_episode is not None:
         return (
-            f"REVIEW ep#{pending_episode.episode_index} "
+            f"\x1b[93m?{_STATUS_TEXT_FG} review pending ep#{pending_episode.episode_index} "
             f"{pending_episode.duration:.1f}s"
         )
-    return "IDLE"
+    return f"\x1b[92m●{_STATUS_TEXT_FG} IDLE"
 
 
 def _status_lines(
-    runtime: AsyncCollectionRuntime,
-    pending_episode: RecordedEpisode | None,
+    runtime: CollectionRuntimeService,
+    snapshot: RuntimeSnapshot,
+    pending_episode: _EpisodeSummaryLike | None,
     *,
     episodes_kept: int,
     pending_exports: int,
@@ -281,7 +320,7 @@ def _status_lines(
 ) -> tuple[str, str]:
     """Build the two bottom status lines."""
     line1 = (
-        f" State: {_state_line(runtime, pending_episode)}"
+        f" State: {_state_line(snapshot, pending_episode)}"
         f" │ Episodes kept: {episodes_kept}"
         f" │ Export queue: {pending_exports} pending / {completed_exports} done"
         f" │ FPS: {actual_fps:.1f}"
@@ -301,12 +340,12 @@ def _status_lines(
 
 def run_collection(cfg: RollioConfig) -> None:
     """Run the data collection TUI."""
-    runtime = AsyncCollectionRuntime.from_config(cfg)
+    runtime = create_runtime_service(cfg, use_worker=True)
     robot_types = {robot.name: robot.type for robot in cfg.robots}
     runtime_opened = False
 
     episodes_kept = 0
-    pending_episode: RecordedEpisode | None = None
+    pending_episode: RecordedEpisodeSummary | None = None
     mode_idx = 0  # start at "true" (24-bit)
     _t_prev_frame = time.monotonic()
     actual_fps = 0.0
@@ -328,6 +367,7 @@ def run_collection(cfg: RollioConfig) -> None:
                     actual_fps = 0.9 * actual_fps + 0.1 / _frame_dt
                     render_gap_history_ms.append(_frame_dt * 1000.0)
                 render_mode = RENDER_MODES[mode_idx]
+                snapshot = runtime.snapshot()
 
                 # ── Input ────────────────────────────────────────
                 key = term.key()
@@ -338,29 +378,33 @@ def run_collection(cfg: RollioConfig) -> None:
                 elif key == "\\":
                     show_debug = not show_debug
                 elif _matches_key_binding(key, cfg.controls.start_stop):
-                    if runtime.recording:
+                    if snapshot.recording:
                         pending_episode = runtime.stop_episode()
                     else:
                         runtime.start_episode()
+                        pending_episode = None
+                    snapshot = runtime.snapshot()
                 elif pending_episode is not None and _matches_keep_review(
                     key,
                     cfg.controls.keep,
                 ):
-                    runtime.keep_episode(pending_episode)
+                    runtime.keep_episode()
                     episodes_kept += 1
                     pending_episode = None
+                    snapshot = runtime.snapshot()
                 elif pending_episode is not None and _matches_discard_review(
                     key,
                     cfg.controls.discard,
                 ):
-                    runtime.discard_episode(pending_episode)
+                    runtime.discard_episode()
                     pending_episode = None
+                    snapshot = runtime.snapshot()
 
-                pending_exports, completed_exports = runtime.export_status()
+                pending_exports, completed_exports = snapshot.export_status
 
                 # ── Read runtime caches ───────────────────────────
-                latest_frames = runtime.latest_frames()
-                robot_display = runtime.latest_robot_states()
+                latest_frames = snapshot.latest_frames
+                robot_display = snapshot.latest_robot_states
 
                 # ── Layout ───────────────────────────────────────
                 W, H = term.cols, term.rows
@@ -389,10 +433,7 @@ def run_collection(cfg: RollioConfig) -> None:
                     if robot_h
                     else []
                 )
-                diagnostics_getter = getattr(runtime, "timing_diagnostics", None)
-                timing_diagnostics = (
-                    diagnostics_getter() if callable(diagnostics_getter) else None
-                )
+                timing_diagnostics = snapshot.timing_diagnostics
                 side_lines = (
                     build_timing_panel_lines(
                         panel_w=side_w,
@@ -413,6 +454,7 @@ def run_collection(cfg: RollioConfig) -> None:
                 )
                 status_line_1, status_line_2 = _status_lines(
                     runtime,
+                    snapshot,
                     pending_episode,
                     episodes_kept=episodes_kept,
                     pending_exports=pending_exports,
@@ -442,10 +484,12 @@ def run_collection(cfg: RollioConfig) -> None:
                         cam_h_each = max(1, remaining // max(remaining_cams, 1))
                         dedicated_label_row = cam_h_each > 1
                         preview_h = max(1, cam_h_each - 1) if dedicated_label_row else 1
+                        rendered_preview_h = 1
                         frame = latest_frames.get(cn)
                         if frame is not None:
                             fh, fw = frame.shape[:2]
                             rw, rh = calc_render_size(fw, fh, left_w, preview_h)
+                            rendered_preview_h = max(1, min(preview_h, rh))
                             rendered = render_frame(frame, rw, rh, render_mode)
                             frame_out.extend(blit_frame(rendered, cam_row, 1))
                         else:
@@ -457,9 +501,7 @@ def run_collection(cfg: RollioConfig) -> None:
                                 height=preview_h,
                                 lines=["\x1b[90m(no preview)\x1b[0m"],
                             )
-                        label_row = cam_row + preview_h - 1
-                        if dedicated_label_row:
-                            label_row += 1
+                        label_row = cam_row if not dedicated_label_row else cam_row + rendered_preview_h
                         _write_lines(
                             frame_out,
                             row=label_row,
@@ -504,10 +546,10 @@ def run_collection(cfg: RollioConfig) -> None:
                 status_bytes = (
                     f"\x1b[{H-1};1H"
                     f"\x1b[48;5;236m\x1b[38;5;250m"
-                    f"{status_line_1[:W].ljust(W)}"
+                    f"{_fit_ansi(status_line_1, W)}"
                     f"\x1b[{H};1H"
                     f"\x1b[48;5;236m\x1b[38;5;250m"
-                    f"{status_line_2[:W].ljust(W)}"
+                    f"{_fit_ansi(status_line_2, W)}"
                     f"\x1b[0m"
                 ).encode()
 

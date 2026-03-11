@@ -7,10 +7,14 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from rollio.collect import RuntimeTimingDiagnostics, TimingTrace
+from rollio.collect import RuntimeSnapshot, RuntimeTimingDiagnostics, TimingTrace
 from rollio.config.schema import CameraConfig, ControlConfig, RollioConfig
 from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.tui import app
+
+STATUS_LINES = getattr(app, "_status_lines")
+HELP_PANEL_LINES = getattr(app, "_help_panel_lines")
+ROBOT_PANEL_LINES = getattr(app, "_robot_panel_lines")
 
 
 class _FakeTerm:
@@ -83,6 +87,17 @@ class _FakeRuntime:
     def export_status(self) -> tuple[int, int]:
         return 0, 0
 
+    def snapshot(self) -> RuntimeSnapshot:
+        return RuntimeSnapshot(
+            recording=self.recording,
+            elapsed=self.elapsed,
+            latest_frames=self._frames,
+            latest_robot_states=self._robot_states,
+            export_status=self.export_status(),
+            timing_diagnostics=self._diagnostics,
+            scheduler_metrics={},
+        )
+
     def latest_frames(self) -> dict[str, np.ndarray]:
         return self._frames
 
@@ -99,12 +114,14 @@ class _FakeRuntime:
         self.recording = False
         return self._pending_episode
 
-    def keep_episode(self, episode: object) -> object:
-        self.keep_calls.append(episode)
+    def keep_episode(self, episode: object | None = None) -> object:
+        self.keep_calls.append(episode if episode is not None else self._pending_episode)
         return SimpleNamespace(done_event=SimpleNamespace(is_set=lambda: False))
 
-    def discard_episode(self, episode: object) -> None:
-        self.discard_calls.append(episode)
+    def discard_episode(self, episode: object | None = None) -> None:
+        self.discard_calls.append(
+            episode if episode is not None else self._pending_episode
+        )
 
 
 def _run_collection_once(
@@ -115,9 +132,9 @@ def _run_collection_once(
 ) -> str:
     fake_stdout = _FakeStdout()
     monkeypatch.setattr(
-        app.AsyncCollectionRuntime,
-        "from_config",
-        staticmethod(lambda _cfg: fake_runtime),
+        app,
+        "create_runtime_service",
+        lambda *_args, **_kwargs: fake_runtime,
     )
     monkeypatch.setattr(app, "_Term", lambda: _FakeTerm(keys))
     monkeypatch.setattr(app.sys, "stdout", fake_stdout)
@@ -132,14 +149,14 @@ def _run_collection_once(
 
 def test_status_lines_include_queue_and_codecs() -> None:
     runtime = SimpleNamespace(
-        recording=False,
-        elapsed=0.0,
         video_codec="libx264",
         depth_codec="ffv1",
     )
+    snapshot = RuntimeSnapshot(recording=False, elapsed=0.0)
 
-    line1, line2 = app._status_lines(
+    line1, line2 = STATUS_LINES(
         runtime,
+        snapshot,
         pending_episode=None,
         episodes_kept=4,
         pending_exports=2,
@@ -148,12 +165,68 @@ def test_status_lines_include_queue_and_codecs() -> None:
         render_mode="16",
     )
 
-    assert "State: IDLE" in line1
+    assert "State:" in line1
+    assert "\x1b[92m●" in line1
+    assert "IDLE" in line1
     assert "Export queue: 2 pending / 7 done" in line1
     assert "FPS: 29.7" in line1
     assert "Render: 16-clr" in line2
     assert "RGB codec: libx264" in line2
     assert "Depth codec: ffv1" in line2
+
+
+def test_status_lines_blink_recording_indicator_at_half_hz(monkeypatch) -> None:
+    runtime = SimpleNamespace(video_codec="libx264", depth_codec="ffv1")
+    snapshot = RuntimeSnapshot(recording=True, elapsed=1.2)
+
+    monkeypatch.setattr(app.time, "monotonic", lambda: 0.25)
+    line_on, _ = STATUS_LINES(
+        runtime,
+        snapshot,
+        pending_episode=None,
+        episodes_kept=0,
+        pending_exports=0,
+        completed_exports=0,
+        actual_fps=30.0,
+        render_mode="16",
+    )
+
+    monkeypatch.setattr(app.time, "monotonic", lambda: 1.25)
+    line_off, _ = STATUS_LINES(
+        runtime,
+        snapshot,
+        pending_episode=None,
+        episodes_kept=0,
+        pending_exports=0,
+        completed_exports=0,
+        actual_fps=30.0,
+        render_mode="16",
+    )
+
+    assert "\x1b[91m●" in line_on
+    assert "\x1b[90m○" in line_off
+    assert "RECORDING 1.2s" in line_on
+    assert "RECORDING 1.2s" in line_off
+
+
+def test_status_lines_show_review_pending_question_mark() -> None:
+    runtime = SimpleNamespace(video_codec="libx264", depth_codec="ffv1")
+    snapshot = RuntimeSnapshot(recording=False, elapsed=0.0)
+    pending_episode = SimpleNamespace(episode_index=3, duration=0.4)
+
+    line1, _ = STATUS_LINES(
+        runtime,
+        snapshot,
+        pending_episode=pending_episode,
+        episodes_kept=0,
+        pending_exports=0,
+        completed_exports=0,
+        actual_fps=30.0,
+        render_mode="16",
+    )
+
+    assert "\x1b[93m?" in line1
+    assert "review pending ep#3 0.4s" in line1
 
 
 def test_help_panel_shows_key_help_and_codecs() -> None:
@@ -163,7 +236,7 @@ def test_help_panel_shows_key_help_and_codecs() -> None:
     )
     runtime = SimpleNamespace(video_codec="mpeg4", depth_codec="rawvideo")
 
-    lines = app._help_panel_lines(cfg, runtime, panel_w=32, panel_h=16)
+    lines = HELP_PANEL_LINES(cfg, runtime, panel_w=32, panel_h=16)
     joined = "\n".join(lines)
 
     assert "RGB codec:" in joined
@@ -178,7 +251,7 @@ def test_help_panel_shows_key_help_and_codecs() -> None:
 
 
 def test_robot_panel_uses_eef_mm_range() -> None:
-    lines = app._robot_panel_lines(
+    lines = ROBOT_PANEL_LINES(
         {
             "leader_e2b": {
                 "position": np.array([0.035], dtype=np.float32),
@@ -193,7 +266,7 @@ def test_robot_panel_uses_eef_mm_range() -> None:
 
 
 def test_robot_panel_shows_control_interval_bar() -> None:
-    lines = app._robot_panel_lines(
+    lines = ROBOT_PANEL_LINES(
         {
             "leader_arm": {
                 "position": np.array([0.1], dtype=np.float32),
@@ -228,6 +301,7 @@ def test_run_collection_renders_camera_name_below_preview(monkeypatch) -> None:
     rendered = _run_collection_once(monkeypatch, fake_runtime, ["x", "q"], cfg)
 
     assert "[1] cam_main" in rendered
+    assert "\x1b[2;1H\x1b[1;96m[1] cam_main" in rendered
 
 
 def test_run_collection_uses_enter_to_keep_reviewed(monkeypatch) -> None:

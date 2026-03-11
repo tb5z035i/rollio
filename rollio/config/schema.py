@@ -156,6 +156,7 @@ class AsyncPipelineConfig(BaseModel):
     control_hz: int = DEFAULT_CONTROL_HZ
     max_pending_episodes: int = 8
     allow_drop_preview_frames: bool = True
+    worker_bootstrap: list[str] = Field(default_factory=list)
 
 
 class TeleopPairConfig(BaseModel):

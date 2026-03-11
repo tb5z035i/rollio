@@ -319,7 +319,9 @@ class PseudoRobotArm(RobotArm):
         self._name = name
         self._n_dof = n_dof
         self._noise_level = noise_level
-        self._dt = 1.0 / control_frequency
+        self._nominal_dt = 1.0 / max(float(control_frequency), 1e-6)
+        self._max_integration_dt = max(self._nominal_dt * 100.0, 0.1)
+        self._last_control_ts: float | None = None
 
         # State
         self._is_open = False
@@ -391,12 +393,14 @@ class PseudoRobotArm(RobotArm):
         self._q = np.zeros(self._n_dof)
         self._qd = np.zeros(self._n_dof)
         self._tau = np.zeros(self._n_dof)
+        self._last_control_ts = None
 
     def close(self) -> None:
         """Close the pseudo robot."""
         self._is_enabled = False
         self._control_mode = ControlMode.DISABLED
         self._is_open = False
+        self._last_control_ts = None
 
     def enable(self) -> bool:
         """Enable the pseudo robot."""
@@ -473,9 +477,11 @@ class PseudoRobotArm(RobotArm):
         # Clamp acceleration for numerical stability
         qdd = np.clip(qdd, -self._max_qdd, self._max_qdd)
 
+        dt = self._integration_dt()
+
         # Integrate
-        self._qd += qdd * self._dt
-        self._q += self._qd * self._dt
+        self._qd += qdd * dt
+        self._q += self._qd * dt
 
         # Clamp joint angles
         self._q = np.clip(self._q, -np.pi, np.pi)
@@ -521,10 +527,12 @@ class PseudoRobotArm(RobotArm):
         # Clamp acceleration for numerical stability
         qdd = np.clip(qdd, -self._max_qdd, self._max_qdd)
 
+        dt = self._integration_dt()
+
         # Integrate with velocity damping for stability
-        self._qd += qdd * self._dt
+        self._qd += qdd * dt
         self._qd *= 0.995  # Small velocity decay for stability
-        self._q += self._qd * self._dt
+        self._q += self._qd * dt
 
         # Clamp joint angles
         self._q = np.clip(self._q, -np.pi, np.pi)
@@ -538,6 +546,7 @@ class PseudoRobotArm(RobotArm):
         """Directly set joint positions (for testing)."""
         self._q = np.asarray(q, dtype=np.float64)
         self._qd = np.zeros(self._n_dof)
+        self._last_control_ts = None
 
     def get_raw_position(self) -> np.ndarray:
         """Get raw joint positions without noise (for testing)."""
@@ -546,3 +555,14 @@ class PseudoRobotArm(RobotArm):
     def get_raw_velocity(self) -> np.ndarray:
         """Get raw joint velocities without noise (for testing)."""
         return self._qd.copy()
+
+    def _integration_dt(self) -> float:
+        """Use real command gaps when slower than the nominal control step."""
+
+        now = monotonic_sec()
+        last_ts = self._last_control_ts
+        self._last_control_ts = now
+        if last_ts is None:
+            return self._nominal_dt
+        elapsed = max(0.0, now - last_ts)
+        return min(max(elapsed, self._nominal_dt), self._max_integration_dt)

@@ -6,7 +6,7 @@ import io
 
 import numpy as np
 
-from rollio.collect import RuntimeTimingDiagnostics, TimingTrace
+from rollio.collect import RuntimeSnapshot, RuntimeTimingDiagnostics, TimingTrace
 from rollio.defaults import DEFAULT_CONTROL_HZ, DEFAULT_CONTROL_INTERVAL_MS
 from rollio.config.schema import RobotConfig
 from rollio.episode.codecs import (
@@ -216,6 +216,14 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
         def latest_robot_states(self) -> dict[str, dict[str, object]]:
             return {}
 
+        def snapshot(self) -> RuntimeSnapshot:
+            return RuntimeSnapshot(
+                latest_frames=self.latest_frames(),
+                latest_robot_states=self.latest_robot_states(),
+                scheduler_metrics=self.scheduler_metrics(),
+                timing_diagnostics=self.timing_diagnostics(),
+            )
+
         def scheduler_metrics(self) -> dict[str, object]:
             class _TaskMetrics:
                 def __init__(self) -> None:
@@ -240,19 +248,17 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
 
     preview_runtime = _FakePreviewRuntime()
 
-    def fake_from_config(
+    def fake_create_runtime_service(
         cfg,
+        use_worker=True,
         scheduler_driver="asyncio",
         preview_live_feedback=False,
     ):
+        assert use_worker is True
         created.append((cfg, scheduler_driver, preview_live_feedback))
         return preview_runtime
 
-    monkeypatch.setattr(
-        wizard.AsyncCollectionRuntime,
-        "from_config",
-        staticmethod(fake_from_config),
-    )
+    monkeypatch.setattr(wizard, "create_runtime_service", fake_create_runtime_service)
 
     result = wizard._screen_summary(
         _FakeTerm(["\n"]),
@@ -310,6 +316,14 @@ def test_screen_summary_renders_timing_panel_when_debug_enabled(monkeypatch) -> 
         def latest_robot_states(self) -> dict[str, dict[str, object]]:
             return {}
 
+        def snapshot(self) -> RuntimeSnapshot:
+            return RuntimeSnapshot(
+                latest_frames=self.latest_frames(),
+                latest_robot_states=self.latest_robot_states(),
+                scheduler_metrics=self.scheduler_metrics(),
+                timing_diagnostics=self.timing_diagnostics(),
+            )
+
         def scheduler_metrics(self) -> dict[str, object]:
             class _DriverMetrics:
                 def __init__(self) -> None:
@@ -357,9 +371,9 @@ def test_screen_summary_renders_timing_panel_when_debug_enabled(monkeypatch) -> 
     preview_runtime = _FakePreviewRuntime()
 
     monkeypatch.setattr(
-        wizard.AsyncCollectionRuntime,
-        "from_config",
-        staticmethod(lambda *args, **kwargs: preview_runtime),
+        wizard,
+        "create_runtime_service",
+        lambda *args, **kwargs: preview_runtime,
     )
 
     out = io.BytesIO()

@@ -19,7 +19,7 @@ from collections import deque
 
 import numpy as np
 
-from rollio.collect import AsyncCollectionRuntime
+from rollio.collect import CollectionRuntimeService, create_runtime_service
 from rollio.config.pairing import (
     default_mapper_for_pair,
     suggest_teleop_pairs,
@@ -1770,7 +1770,7 @@ def _screen_summary(
     _needs_clear = True
     selected_cam = 0 if cam_entries else -1
     _needs_restart = True
-    preview_runtime: AsyncCollectionRuntime | None = None
+    preview_runtime: CollectionRuntimeService | None = None
     preview_started_at: float | None = None
     preview_target_fps = max([30, *[cfg.fps for cfg in cam_configs]])
 
@@ -1786,7 +1786,7 @@ def _screen_summary(
         else:
             buf.write(f"\x1b[{row};{col}H{text}\x1b[K\x1b[0m".encode())
 
-    def _build_preview_runtime() -> AsyncCollectionRuntime:
+    def _build_preview_runtime() -> CollectionRuntimeService:
         preview_cfg = RollioConfig(
             project_name=project_name,
             fps=preview_target_fps,
@@ -1801,8 +1801,9 @@ def _screen_summary(
                 depth_codec=depth_codec,
             ),
         )
-        return AsyncCollectionRuntime.from_config(
+        return create_runtime_service(
             preview_cfg,
+            use_worker=True,
             scheduler_driver="round_robin",
             preview_live_feedback=True,
         )
@@ -1837,7 +1838,7 @@ def _screen_summary(
                 if preview_runtime is not None:
                     preview_runtime.close()
 
-                def _start_preview_runtime() -> AsyncCollectionRuntime:
+                def _start_preview_runtime() -> CollectionRuntimeService:
                     runtime = _build_preview_runtime()
                     runtime.open()
                     return runtime
@@ -1857,24 +1858,18 @@ def _screen_summary(
 
             W, H = term.cols, term.rows
             buf = io.BytesIO()
-            latest_frames = (
-                preview_runtime.latest_frames() if preview_runtime is not None else {}
-            )
+            snapshot = preview_runtime.snapshot() if preview_runtime is not None else None
+            latest_frames = snapshot.latest_frames if snapshot is not None else {}
             latest_robot_states = (
-                preview_runtime.latest_robot_states()
-                if preview_runtime is not None
-                else {}
+                snapshot.latest_robot_states if snapshot is not None else {}
             )
             driver_metrics = (
-                preview_runtime.scheduler_metrics()["driver"]
-                if preview_runtime is not None
+                snapshot.scheduler_metrics["driver"]
+                if snapshot is not None
                 else None
             )
-            diagnostics_getter = getattr(preview_runtime, "timing_diagnostics", None)
             timing_diagnostics = (
-                diagnostics_getter()
-                if preview_runtime is not None and callable(diagnostics_getter)
-                else None
+                snapshot.timing_diagnostics if snapshot is not None else None
             )
             task_metrics = (
                 driver_metrics.task_metrics if driver_metrics is not None else {}

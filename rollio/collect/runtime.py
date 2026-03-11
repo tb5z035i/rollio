@@ -66,6 +66,17 @@ class RecordedEpisode:
 
 
 @dataclass(frozen=True)
+class RecordedEpisodeSummary:
+    """Serializable review handle for one completed episode."""
+
+    episode_index: int
+    duration: float
+    started_at: float
+    stopped_at: float
+    mapper_modes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class TimingTrace:
     """Compact timing summary suitable for TUI diagnostics."""
 
@@ -84,6 +95,37 @@ class RuntimeTimingDiagnostics:
     telemetry_runs: TimingTrace = field(default_factory=TimingTrace)
     control_runs: TimingTrace = field(default_factory=TimingTrace)
     valid_robot_samples: dict[str, TimingTrace] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RuntimeSnapshot:
+    """Serializable snapshot for UI and other runtime clients."""
+
+    recording: bool = False
+    elapsed: float = 0.0
+    latest_frames: dict[str, np.ndarray | None] = field(default_factory=dict)
+    latest_robot_states: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    latest_pair_modes: dict[str, str] = field(default_factory=dict)
+    action_layout: list[dict[str, int | str]] = field(default_factory=list)
+    export_status: tuple[int, int] = (0, 0)
+    scheduler_metrics: dict[str, DriverMetrics | dict[str, FrameSourceMetrics]] = field(
+        default_factory=dict
+    )
+    timing_diagnostics: RuntimeTimingDiagnostics = field(
+        default_factory=RuntimeTimingDiagnostics
+    )
+
+
+def summarize_recorded_episode(episode: RecordedEpisode) -> RecordedEpisodeSummary:
+    """Return the lightweight review summary for one recorded episode."""
+
+    return RecordedEpisodeSummary(
+        episode_index=episode.episode_index,
+        duration=episode.duration,
+        started_at=episode.started_at,
+        stopped_at=episode.stopped_at,
+        mapper_modes=dict(episode.mapper_modes),
+    )
 
 
 class _TimingHistory:
@@ -1216,6 +1258,32 @@ class AsyncCollectionRuntime:
             telemetry_runs=telemetry_runs,
             control_runs=control_runs,
             valid_robot_samples=valid_robot_samples,
+        )
+
+    def snapshot(self) -> RuntimeSnapshot:
+        """Return one batched snapshot for UI and automation clients."""
+
+        with self._state_lock:
+            episode = self._current_episode
+            latest_frames = dict(self._latest_frames)
+            latest_robot_states = {
+                name: dict(state) for name, state in self._latest_robot_states.items()
+            }
+            latest_pair_modes = dict(self._latest_pair_modes)
+            action_layout = [dict(entry) for entry in self._action_layout]
+        elapsed = 0.0
+        if episode is not None:
+            elapsed = max(0.0, time.monotonic() - episode._started_at)  # noqa: SLF001
+        return RuntimeSnapshot(
+            recording=episode is not None,
+            elapsed=elapsed,
+            latest_frames=latest_frames,
+            latest_robot_states=latest_robot_states,
+            latest_pair_modes=latest_pair_modes,
+            action_layout=action_layout,
+            export_status=self.export_status(),
+            scheduler_metrics=self.scheduler_metrics(),
+            timing_diagnostics=self.timing_diagnostics(),
         )
 
     def observe_control_run(self, timestamp: float | None = None) -> None:
