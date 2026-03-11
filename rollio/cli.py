@@ -1,4 +1,5 @@
 """CLI entry points for Rollio."""
+
 from __future__ import annotations
 
 import argparse
@@ -16,6 +17,7 @@ except ImportError:  # pragma: no cover - non-Unix fallback
 # Try to import argcomplete for shell completion
 try:
     import argcomplete
+
     ARGCOMPLETE_AVAILABLE = True
 except ImportError:
     ARGCOMPLETE_AVAILABLE = False
@@ -118,10 +120,13 @@ def _cmd_collect(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print(f"Project: {cfg.project_name}")
-    print(f"Cameras: {[c.name for c in cfg.cameras]} "
-          f"({[c.type for c in cfg.cameras]})")
-    print(f"Robots:  {[r.name for r in cfg.robots]} "
-          f"({[r.type for r in cfg.robots]})")
+    print(
+        f"Cameras: {[c.name for c in cfg.cameras]} "
+        f"({[c.type for c in cfg.cameras]})"
+    )
+    print(
+        f"Robots:  {[r.name for r in cfg.robots]} " f"({[r.type for r in cfg.robots]})"
+    )
     print(f"Storage: {cfg.storage.root}/{cfg.project_name}")
     print(f"FPS:     {cfg.fps}")
     print("Starting TUI…")
@@ -156,14 +161,14 @@ def _cmd_test(args: argparse.Namespace) -> None:
 
     # Build kwargs from args
     kwargs = {}
-    if hasattr(args, 'device') and args.device:
-        kwargs['can_interface'] = args.device
-    if hasattr(args, 'duration') and args.duration is not None:
-        kwargs['duration'] = args.duration
-    if hasattr(args, 'verbose'):
-        kwargs['verbose'] = args.verbose
-    if hasattr(args, 'no_return_zero'):
-        kwargs['return_to_zero'] = not args.no_return_zero
+    if hasattr(args, "device") and args.device:
+        kwargs["can_interface"] = args.device
+    if hasattr(args, "duration") and args.duration is not None:
+        kwargs["duration"] = args.duration
+    if hasattr(args, "verbose"):
+        kwargs["verbose"] = args.verbose
+    if hasattr(args, "no_return_zero"):
+        kwargs["return_to_zero"] = not args.no_return_zero
 
     print(f"Running test: {test_name}")
     print("-" * 40)
@@ -183,6 +188,7 @@ class TestNameCompleter:
 
     def __call__(self, prefix: str, parsed_args=None, **kwargs) -> list[str]:
         from rollio.tests import get_available_tests
+
         tests = get_available_tests()
         return [t for t in tests if t.startswith(prefix)]
 
@@ -191,9 +197,9 @@ def _cmd_completion(args: argparse.Namespace) -> None:
     """Install or print shell completion."""
     import os
     import subprocess
-    
+
     shell = args.shell
-    
+
     # Auto-detect shell if not specified
     if shell is None:
         shell_path = os.environ.get("SHELL", "")
@@ -205,7 +211,7 @@ def _cmd_completion(args: argparse.Namespace) -> None:
             shell = "fish"
         else:
             shell = "bash"  # Default to bash
-    
+
     # Check if argcomplete is installed
     if not ARGCOMPLETE_AVAILABLE:
         print("Shell completion requires argcomplete.")
@@ -214,10 +220,10 @@ def _cmd_completion(args: argparse.Namespace) -> None:
         print("\nOr install rollio with completion support:")
         print("  pip install rollio[completion]")
         sys.exit(1)
-    
+
     # Generate completion script
     completion_line = 'eval "$(register-python-argcomplete rollio)"'
-    
+
     if shell == "bash":
         rc_file = Path.home() / ".bashrc"
         script = completion_line
@@ -232,7 +238,8 @@ bashcompinit
         try:
             result = subprocess.run(
                 ["register-python-argcomplete", "--shell", "fish", "rollio"],
-                capture_output=True, text=True
+                capture_output=True,
+                text=True,
             )
             script = result.stdout
         except Exception:
@@ -242,12 +249,12 @@ bashcompinit
         print(f"Unsupported shell: {shell}")
         print("Supported shells: bash, zsh, fish")
         sys.exit(1)
-    
+
     # Print script if --print is specified
     if args.print_script:
         print(script)
         return
-    
+
     # Install completion
     if args.install:
         # Check if already installed
@@ -256,7 +263,7 @@ bashcompinit
             if "register-python-argcomplete rollio" in content:
                 print(f"Completion already installed in {rc_file}")
                 return
-        
+
         # For fish, create the completions directory if needed
         if shell == "fish":
             rc_file.parent.mkdir(parents=True, exist_ok=True)
@@ -267,11 +274,11 @@ bashcompinit
             with open(rc_file, "a") as f:
                 f.write(f"\n# Rollio shell completion\n{script}\n")
             print(f"Completion installed to {rc_file}")
-        
+
         print(f"\nRestart your shell or run:")
         print(f"  source {rc_file}")
         return
-    
+
     # Default: print instructions
     print(f"Shell completion for {shell}")
     print("=" * 40)
@@ -291,89 +298,103 @@ bashcompinit
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="rollio",
-        description="Rollio — robot episode data collection")
+        prog="rollio", description="Rollio — robot episode data collection"
+    )
     sub = parser.add_subparsers(dest="command")
 
     # ── setup ─────────────────────────────────────────────────────
     p_setup = sub.add_parser(
-        "setup",
-        help="Interactive TUI wizard: scan hardware, preview, name channels")
+        "setup", help="Interactive TUI wizard: scan hardware, preview, name channels"
+    )
     p_setup.add_argument(
-        "-o", "--output", default="rollio_config.yaml",
-        help="Output config path (default: rollio_config.yaml)")
+        "-o",
+        "--output",
+        default="rollio_config.yaml",
+        help="Output config path (default: rollio_config.yaml)",
+    )
     p_setup.add_argument(
-        "-f", "--force", action="store_true",
-        help="Overwrite existing config")
+        "-f", "--force", action="store_true", help="Overwrite existing config"
+    )
     p_setup.add_argument(
-        "--sim-cameras", type=int, default=0,
-        help="Number of simulated cameras to show during setup (default: 0)")
+        "--sim-cameras",
+        type=int,
+        default=0,
+        help="Number of simulated cameras to show during setup (default: 0)",
+    )
     p_setup.add_argument(
-        "--sim-arms", type=int, default=0,
-        help="Number of simulated robot arms to show during setup (default: 0)")
+        "--sim-arms",
+        type=int,
+        default=0,
+        help="Number of simulated robot arms to show during setup (default: 0)",
+    )
 
     # ── collect ───────────────────────────────────────────────────
     p_collect = sub.add_parser("collect", help="Run data collection TUI")
     p_collect.add_argument(
-        "-c", "--config", default="rollio_config.yaml",
-        help="Config file path")
+        "-c", "--config", default="rollio_config.yaml", help="Config file path"
+    )
 
     # ── test ──────────────────────────────────────────────────────
-    p_test = sub.add_parser(
-        "test",
-        help="Run hardware tests")
+    p_test = sub.add_parser("test", help="Run hardware tests")
     p_test.add_argument(
-        "test_name",
-        nargs="?",
-        help="Name of the test to run"
-    ).completer = TestNameCompleter() if ARGCOMPLETE_AVAILABLE else None
+        "test_name", nargs="?", help="Name of the test to run"
+    ).completer = (TestNameCompleter() if ARGCOMPLETE_AVAILABLE else None)
     p_test.add_argument(
-        "-l", "--list",
-        action="store_true",
-        help="List available tests")
+        "-l", "--list", action="store_true", help="List available tests"
+    )
     p_test.add_argument(
-        "-d", "--device",
+        "-d",
+        "--device",
         default="can0",
-        help="Device/interface name (e.g., can0 for AIRBOT)")
+        help="Device/interface name (e.g., can0 for AIRBOT)",
+    )
     p_test.add_argument(
-        "-t", "--duration",
+        "-t",
+        "--duration",
         type=float,
         default=None,
-        help="Test duration in seconds (default: indefinite)")
+        help="Test duration in seconds (default: indefinite)",
+    )
     p_test.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         default=True,
-        help="Verbose output (default: True)")
+        help="Verbose output (default: True)",
+    )
     p_test.add_argument(
-        "-q", "--quiet",
-        action="store_false",
-        dest="verbose",
-        help="Quiet output")
+        "-q", "--quiet", action="store_false", dest="verbose", help="Quiet output"
+    )
     p_test.add_argument(
         "--no-return-zero",
         action="store_true",
         default=False,
-        help="Do not return arm to zero position after test (AIRBOT tests)")
+        help="Do not return arm to zero position after test (AIRBOT tests)",
+    )
 
     # ── completion ────────────────────────────────────────────────────
     p_completion = sub.add_parser(
-        "completion",
-        help="Install shell completion for bash/zsh/fish")
+        "completion", help="Install shell completion for bash/zsh/fish"
+    )
     p_completion.add_argument(
         "shell",
         nargs="?",
         choices=["bash", "zsh", "fish"],
-        help="Shell type (auto-detected if not specified)")
+        help="Shell type (auto-detected if not specified)",
+    )
     p_completion.add_argument(
-        "--install", "-i",
+        "--install",
+        "-i",
         action="store_true",
-        help="Install completion to shell config file")
+        help="Install completion to shell config file",
+    )
     p_completion.add_argument(
-        "--print", "-p",
+        "--print",
+        "-p",
         action="store_true",
         dest="print_script",
-        help="Print completion script to stdout")
+        help="Print completion script to stdout",
+    )
 
     # Enable argcomplete if available
     if ARGCOMPLETE_AVAILABLE:

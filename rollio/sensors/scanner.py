@@ -1,4 +1,5 @@
 """Hardware scanner — detect cameras and robots."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -14,22 +15,24 @@ if TYPE_CHECKING:
 @dataclass
 class DetectedDevice:
     """A detected hardware device."""
+
     kind: Literal["camera", "robot"]
-    dtype: str                       # "pseudo", "v4l2", "realsense_color", etc.
-    device_id: int | str             # index or path
-    label: str                       # human-readable description
-    properties: dict                 # extra properties (num_joints, etc.)
+    dtype: str  # "pseudo", "v4l2", "realsense_color", etc.
+    device_id: int | str  # index or path
+    label: str  # human-readable description
+    properties: dict  # extra properties (num_joints, etc.)
     formats: list[CameraFormat] = field(default_factory=list)  # for cameras
-    id_path: str = ""                # udev ID_PATH for stable identification
+    id_path: str = ""  # udev ID_PATH for stable identification
     channels: list[CameraChannel] = field(default_factory=list)  # multi-channel
     # Common camera properties (extracted from properties for convenience)
     width: int = 640
     height: int = 480
     fps: int = 30
-    pixel_format: str = "RGB"        # MJPG, YUYV, z16, y8, y16, bgr8, etc.
+    pixel_format: str = "RGB"  # MJPG, YUYV, z16, y8, y16, bgr8, etc.
 
 
 # ─── Camera type registry ─────────────────────────────────────────────
+
 
 # List of camera sensor classes to scan. Import lazily to avoid circular deps.
 def _get_camera_classes() -> list[type["ImageSensor"]]:
@@ -55,20 +58,22 @@ def _build_pseudo_camera_devices(count: int) -> list[DetectedDevice]:
     base = base_devices[0]
     devices: list[DetectedDevice] = []
     for idx in range(count):
-        devices.append(DetectedDevice(
-            kind=base.kind,
-            dtype=base.dtype,
-            device_id=idx,
-            label=f"Pseudo Camera {idx + 1} (test pattern)",
-            properties=deepcopy(base.properties),
-            formats=deepcopy(base.formats),
-            id_path=base.id_path,
-            channels=deepcopy(base.channels),
-            width=base.width,
-            height=base.height,
-            fps=base.fps,
-            pixel_format=base.pixel_format,
-        ))
+        devices.append(
+            DetectedDevice(
+                kind=base.kind,
+                dtype=base.dtype,
+                device_id=idx,
+                label=f"Pseudo Camera {idx + 1} (test pattern)",
+                properties=deepcopy(base.properties),
+                formats=deepcopy(base.formats),
+                id_path=base.id_path,
+                channels=deepcopy(base.channels),
+                width=base.width,
+                height=base.height,
+                fps=base.fps,
+                pixel_format=base.pixel_format,
+            )
+        )
     return devices
 
 
@@ -106,13 +111,15 @@ def _build_pseudo_robot_devices(count: int) -> list[DetectedDevice]:
 
     devices: list[DetectedDevice] = []
     for idx in range(count):
-        devices.append(DetectedDevice(
-            kind="robot",
-            dtype="pseudo",
-            device_id=idx,
-            label=f"Pseudo Robot {idx + 1} (6-DOF simulation)",
-            properties={"num_joints": 6, "simulated": True},
-        ))
+        devices.append(
+            DetectedDevice(
+                kind="robot",
+                dtype="pseudo",
+                device_id=idx,
+                label=f"Pseudo Robot {idx + 1} (6-DOF simulation)",
+                properties={"num_joints": 6, "simulated": True},
+            )
+        )
     return devices
 
 
@@ -122,10 +129,10 @@ def scan_robots(
     simulated_count: int = 0,
 ) -> list[DetectedDevice]:
     """Scan for available robots.
-    
+
     Scans for AIRBOT Play robots via CAN bus. Simulated pseudo robots are
     only included when explicitly requested.
-    
+
     Note: For full robot control capabilities, use rollio.robot module directly.
     """
     found: list[DetectedDevice] = []
@@ -133,20 +140,23 @@ def scan_robots(
     # Scan for AIRBOT Play robots
     try:
         from rollio.robot import scan_robots as robot_scan_robots
+
         for robot in robot_scan_robots():
             if robot.robot_type == "pseudo":
                 continue
-            found.append(DetectedDevice(
-                kind="robot",
-                dtype=robot.robot_type,
-                device_id=robot.device_id,
-                label=robot.label,
-                properties={
-                    "num_joints": robot.n_dof,
-                    "can_interface": robot.properties.get("can_interface"),
-                    **robot.properties,
-                }
-            ))
+            found.append(
+                DetectedDevice(
+                    kind="robot",
+                    dtype=robot.robot_type,
+                    device_id=robot.device_id,
+                    label=robot.label,
+                    properties={
+                        "num_joints": robot.n_dof,
+                        "can_interface": robot.properties.get("can_interface"),
+                        **robot.properties,
+                    },
+                )
+            )
     except ImportError:
         pass
 

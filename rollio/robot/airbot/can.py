@@ -60,7 +60,11 @@ def probe_airbot_device(interface: str, timeout: float = 1.0) -> bool:
                     continue
 
                 arb_id, data = result
-                if arb_id == AIRBOT_RESPONSE_ID and len(data) >= 2 and data[0] == AIRBOT_IDENTIFY_CMD:
+                if (
+                    arb_id == AIRBOT_RESPONSE_ID
+                    and len(data) >= 2
+                    and data[0] == AIRBOT_IDENTIFY_CMD
+                ):
                     responses.append(data)
                     if len(responses) >= 6:
                         break
@@ -114,7 +118,11 @@ def query_airbot_serial(interface: str, timeout: float = 1.0) -> str | None:
                     continue
 
                 arb_id, data = result
-                if arb_id == AIRBOT_RESPONSE_ID and len(data) >= 2 and data[0] == AIRBOT_SERIAL_CMD:
+                if (
+                    arb_id == AIRBOT_RESPONSE_ID
+                    and len(data) >= 2
+                    and data[0] == AIRBOT_SERIAL_CMD
+                ):
                     responses.append((data[1], data))
                     if len(responses) >= 4:
                         break
@@ -151,11 +159,17 @@ def query_airbot_end_effector(interface: str, timeout: float = 1.0) -> dict | No
                     continue
 
                 arb_id, data = result
-                if arb_id == AIRBOT_EEF_RESPONSE_ID and len(data) >= 3 and data[0] == AIRBOT_EEF_TYPE_CMD:
+                if (
+                    arb_id == AIRBOT_EEF_RESPONSE_ID
+                    and len(data) >= 3
+                    and data[0] == AIRBOT_EEF_TYPE_CMD
+                ):
                     type_code = data[2]
                     return {
                         "type_code": type_code,
-                        "type_name": AIRBOT_EEF_TYPES.get(type_code, f"unknown_{type_code:02x}"),
+                        "type_name": AIRBOT_EEF_TYPES.get(
+                            type_code, f"unknown_{type_code:02x}"
+                        ),
                     }
 
             return None
@@ -188,7 +202,11 @@ def query_airbot_gravity_coefficients(
                     continue
 
                 arb_id, data = result
-                if arb_id == AIRBOT_RESPONSE_ID and len(data) >= 6 and data[0] == AIRBOT_GRAVITY_COEFF_CMD:
+                if (
+                    arb_id == AIRBOT_RESPONSE_ID
+                    and len(data) >= 6
+                    and data[0] == AIRBOT_GRAVITY_COEFF_CMD
+                ):
                     responses[data[1]] = data[2:6]
                     if len(responses) >= 24:
                         break

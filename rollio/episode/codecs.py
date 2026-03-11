@@ -1,4 +1,5 @@
 """Codec discovery and encoding presets for Rollio exports."""
+
 from __future__ import annotations
 
 import subprocess
@@ -85,7 +86,11 @@ def parse_ffmpeg_encoder_names(output: str) -> set[str]:
     encoders: set[str] = set()
     for line in output.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("Encoders:") or stripped.startswith("--"):
+        if (
+            not stripped
+            or stripped.startswith("Encoders:")
+            or stripped.startswith("--")
+        ):
             continue
         parts = stripped.split()
         if len(parts) >= 2 and parts[0].startswith("V"):

@@ -1,4 +1,5 @@
 """Shared scheduler drivers for collection and preview."""
+
 from __future__ import annotations
 
 import asyncio
@@ -37,6 +38,10 @@ class DriverMetrics:
 
     driver_name: str
     task_metrics: dict[str, TaskMetrics]
+    loop_run_count: int = 0
+    last_loop_us: float = 0.0
+    avg_loop_us: float = 0.0
+    max_loop_us: float = 0.0
 
 
 @dataclass
@@ -50,7 +55,9 @@ class _MutableTaskMetrics:
     max_step_ms: float = 0.0
     last_error: str | None = None
 
-    def observe(self, elapsed_sec: float, *, overrun_count: int = 0, error: str | None = None) -> None:
+    def observe(
+        self, elapsed_sec: float, *, overrun_count: int = 0, error: str | None = None
+    ) -> None:
         self.run_count += 1
         self.overrun_count += max(0, overrun_count)
         if error is not None:
@@ -79,6 +86,25 @@ class _MutableTaskMetrics:
 
 
 @dataclass
+class _MutableLoopMetrics:
+    run_count: int = 0
+    last_loop_us: float = 0.0
+    avg_loop_us: float = 0.0
+    max_loop_us: float = 0.0
+
+    def observe(self, elapsed_sec: float) -> None:
+        elapsed_us = elapsed_sec * 1_000_000.0
+        self.run_count += 1
+        self.last_loop_us = elapsed_us
+        self.max_loop_us = max(self.max_loop_us, elapsed_us)
+        if self.run_count == 1:
+            self.avg_loop_us = elapsed_us
+        else:
+            prev = self.run_count - 1
+            self.avg_loop_us = ((self.avg_loop_us * prev) + elapsed_us) / self.run_count
+
+
+@dataclass
 class _TaskState:
     task: ScheduledTask
     next_run: float
@@ -94,6 +120,7 @@ class BaseSchedulerDriver:
         self._tasks = tasks
         self._metrics_lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._loop_metrics = _MutableLoopMetrics()
         self._states: list[_TaskState] = [
             _TaskState(
                 task=task,
@@ -112,10 +139,26 @@ class BaseSchedulerDriver:
     def metrics(self) -> DriverMetrics:
         with self._metrics_lock:
             task_metrics = {
-                state.task.name: state.metrics.freeze()
-                for state in self._states
+                state.task.name: state.metrics.freeze() for state in self._states
             }
-        return DriverMetrics(driver_name=self.DRIVER_NAME, task_metrics=task_metrics)
+            loop_metrics = _MutableLoopMetrics(
+                run_count=self._loop_metrics.run_count,
+                last_loop_us=self._loop_metrics.last_loop_us,
+                avg_loop_us=self._loop_metrics.avg_loop_us,
+                max_loop_us=self._loop_metrics.max_loop_us,
+            )
+        return DriverMetrics(
+            driver_name=self.DRIVER_NAME,
+            task_metrics=task_metrics,
+            loop_run_count=loop_metrics.run_count,
+            last_loop_us=loop_metrics.last_loop_us,
+            avg_loop_us=loop_metrics.avg_loop_us,
+            max_loop_us=loop_metrics.max_loop_us,
+        )
+
+    def _observe_loop(self, elapsed_sec: float) -> None:
+        with self._metrics_lock:
+            self._loop_metrics.observe(elapsed_sec)
 
     def _run_due_tasks(self) -> tuple[bool, float | None]:
         now = time.monotonic()
@@ -145,7 +188,11 @@ class BaseSchedulerDriver:
                 state.next_run += (overrun_count + 1) * state.task.interval_sec
                 ran_any = True
 
-            next_deadline = state.next_run if next_deadline is None else min(next_deadline, state.next_run)
+            next_deadline = (
+                state.next_run
+                if next_deadline is None
+                else min(next_deadline, state.next_run)
+            )
 
         return ran_any, next_deadline
 
@@ -177,12 +224,19 @@ class RoundRobinDriver(BaseSchedulerDriver):
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
+            loop_started_at = time.monotonic()
             ran_any, next_deadline = self._run_due_tasks()
             if ran_any:
+                self._observe_loop(time.monotonic() - loop_started_at)
+            if ran_any:
                 continue
-            sleep_sec = 0.05 if next_deadline is None else max(
-                0.0,
-                min(next_deadline - time.monotonic(), 0.05),
+            sleep_sec = (
+                0.05
+                if next_deadline is None
+                else max(
+                    0.0,
+                    min(next_deadline - time.monotonic(), 0.05),
+                )
             )
             if self._stop_event.wait(sleep_sec):
                 return
@@ -229,18 +283,27 @@ class AsyncioDriver(BaseSchedulerDriver):
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
+            loop_started_at = time.monotonic()
             ran_any, next_deadline = self._run_due_tasks()
+            if ran_any:
+                self._observe_loop(time.monotonic() - loop_started_at)
             if ran_any:
                 await asyncio.sleep(0)
                 continue
-            sleep_sec = 0.05 if next_deadline is None else max(
-                0.0,
-                min(next_deadline - time.monotonic(), 0.05),
+            sleep_sec = (
+                0.05
+                if next_deadline is None
+                else max(
+                    0.0,
+                    min(next_deadline - time.monotonic(), 0.05),
+                )
             )
             await asyncio.sleep(sleep_sec)
 
 
-def build_scheduler_driver(name: str, tasks: list[ScheduledTask]) -> BaseSchedulerDriver:
+def build_scheduler_driver(
+    name: str, tasks: list[ScheduledTask]
+) -> BaseSchedulerDriver:
     """Create one scheduler driver by name."""
     driver_name = str(name).strip().lower()
     if driver_name == "asyncio":

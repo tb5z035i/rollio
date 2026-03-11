@@ -5,6 +5,7 @@ import pytest
 
 from rollio.tests.airbot_play_teleop_mit_trace import (
     TraceSample,
+    _build_arg_parser,
     _encode_plotjuggler_message,
     _build_plotjuggler_message,
     _clamp_g2_target,
@@ -21,7 +22,9 @@ def test_parse_axis_values_expands_scalar() -> None:
 def test_parse_axis_values_accepts_full_vector() -> None:
     parsed = _parse_axis_values("1,2,3,4,5,6", expected=6, name="kd")
 
-    np.testing.assert_array_equal(parsed, np.array([1, 2, 3, 4, 5, 6], dtype=np.float64))
+    np.testing.assert_array_equal(
+        parsed, np.array([1, 2, 3, 4, 5, 6], dtype=np.float64)
+    )
 
 
 def test_parse_axis_values_rejects_wrong_length() -> None:
@@ -35,11 +38,20 @@ def test_clamp_g2_target_respects_supported_range() -> None:
     assert _clamp_g2_target(0.08) == 0.072
 
 
+def test_arg_parser_no_longer_accepts_g2_velocity_flag() -> None:
+    parser = _build_arg_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--g2-velocity", "25"])
+
+
 def test_build_plotjuggler_message_flattens_named_series() -> None:
     sample = TraceSample(
         timestamp_sec=123.5,
         leader_position=np.array([1, 2, 3, 4, 5, 6, 0.01], dtype=np.float64),
-        mapped_target_position=np.array([10, 20, 30, 40, 50, 60, 0.02], dtype=np.float64),
+        mapped_target_position=np.array(
+            [10, 20, 30, 40, 50, 60, 0.02], dtype=np.float64
+        ),
         follower_position=np.array([11, 19, 29, 41, 49, 61, 0.03], dtype=np.float64),
     )
 
@@ -53,7 +65,7 @@ def test_build_plotjuggler_message_flattens_named_series() -> None:
     assert message["target/g2"] == 0.02
     assert message["follower/g2"] == 0.03
     assert message["error/joint2"] == -1.0
-    assert message["error/g2"] == 0.01
+    assert message["error/g2"] == pytest.approx(0.01)
     assert message["error/arm_rms"] > 0.0
 
 

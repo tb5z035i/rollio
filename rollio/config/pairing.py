@@ -1,4 +1,5 @@
 """Helpers for explicit tele-operation pair configuration."""
+
 from __future__ import annotations
 
 from collections import Counter
@@ -49,12 +50,14 @@ def suggest_teleop_pairs(robots: list[RobotConfig]) -> list[TeleopPairConfig]:
         if follower_match is None:
             continue
         remaining_followers.remove(follower_match)
-        pairs.append(TeleopPairConfig(
-            name=f"pair_{len(pairs)}",
-            leader=leader.name,
-            follower=follower_match.name,
-            mapper=default_mapper_for_pair(leader, follower_match),
-        ))
+        pairs.append(
+            TeleopPairConfig(
+                name=f"pair_{len(pairs)}",
+                leader=leader.name,
+                follower=follower_match.name,
+                mapper=default_mapper_for_pair(leader, follower_match),
+            )
+        )
     return pairs
 
 
@@ -73,7 +76,9 @@ def validate_teleop_pairs(
         raise ValueError("Tele-op mode requires at least one follower robot")
 
     pair_names = [pair.name for pair in pairs]
-    duplicate_pair_names = [name for name, count in Counter(pair_names).items() if count > 1]
+    duplicate_pair_names = [
+        name for name, count in Counter(pair_names).items() if count > 1
+    ]
     if duplicate_pair_names:
         raise ValueError(
             "Tele-op pair names must be unique: "
@@ -81,7 +86,9 @@ def validate_teleop_pairs(
         )
 
     duplicate_leaders = [
-        name for name, count in Counter(pair.leader for pair in pairs).items() if count > 1
+        name
+        for name, count in Counter(pair.leader for pair in pairs).items()
+        if count > 1
     ]
     if duplicate_leaders:
         raise ValueError(
@@ -90,7 +97,9 @@ def validate_teleop_pairs(
         )
 
     duplicate_followers = [
-        name for name, count in Counter(pair.follower for pair in pairs).items() if count > 1
+        name
+        for name, count in Counter(pair.follower for pair in pairs).items()
+        if count > 1
     ]
     if duplicate_followers:
         raise ValueError(
@@ -100,10 +109,18 @@ def validate_teleop_pairs(
 
     for pair in pairs:
         if pair.leader not in robots_by_name:
-            raise ValueError(f"Unknown leader robot in pair '{pair.name}': {pair.leader}")
+            raise ValueError(
+                f"Unknown leader robot in pair '{pair.name}': {pair.leader}"
+            )
         if pair.follower not in robots_by_name:
-            raise ValueError(f"Unknown follower robot in pair '{pair.name}': {pair.follower}")
+            raise ValueError(
+                f"Unknown follower robot in pair '{pair.name}': {pair.follower}"
+            )
         if pair.leader not in leaders:
-            raise ValueError(f"Robot '{pair.leader}' in pair '{pair.name}' is not marked as a leader")
+            raise ValueError(
+                f"Robot '{pair.leader}' in pair '{pair.name}' is not marked as a leader"
+            )
         if pair.follower not in followers:
-            raise ValueError(f"Robot '{pair.follower}' in pair '{pair.name}' is not marked as a follower")
+            raise ValueError(
+                f"Robot '{pair.follower}' in pair '{pair.name}' is not marked as a follower"
+            )

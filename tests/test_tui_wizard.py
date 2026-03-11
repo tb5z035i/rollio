@@ -1,4 +1,5 @@
 """Tests for setup wizard project settings flow."""
+
 from __future__ import annotations
 
 import io
@@ -226,6 +227,9 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
                         "robot-arm0": _TaskMetrics(),
                         "teleop-pair_0": _TaskMetrics(),
                     }
+                    self.loop_run_count = 10
+                    self.last_loop_us = 420.0
+                    self.avg_loop_us = 400.0
 
             return {"driver": _DriverMetrics()}
 
@@ -449,7 +453,7 @@ def test_screen_robots_persists_airbot_play_pvt_tracking_mode(monkeypatch) -> No
 
 
 def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:
-    prompts = iter(["gripper_demo", "f"])
+    prompts = iter(["gripper_demo", "f", "m"])
     out = io.BytesIO()
 
     class _FakeG2Robot:
@@ -474,7 +478,11 @@ def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:
             return _State()
 
         def latest_command_debug(self) -> tuple[str, str]:
-            return ("PVT", "pos=[ 0.0350] vel=[200.0000] current_threshold=[200.0000]")
+            return (
+                "MIT",
+                "pos=[ 0.0350] vel=[ 0.0000] eff=[ 0.0000] "
+                "mit_kp=[10.0000] mit_kd=[ 0.2000] current_threshold=[ 0.0000]",
+            )
 
         def identify_stop(self) -> bool:
             self.identify_stopped += 1
@@ -500,13 +508,57 @@ def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:
     )
 
     assert configs is not None
+    assert configs == [
+        RobotConfig(
+            name="gripper_demo",
+            type="airbot_g2",
+            role="follower",
+            num_joints=1,
+            device="can0",
+            options={"target_tracking_mode": "mit"},
+            direct_map_allowlist=["airbot_e2b"],
+        )
+    ]
     assert fake_robot.identify_started == 1
     assert fake_robot.identify_steps >= 1
     assert fake_robot.identify_stopped == 1
     rendered = out.getvalue().decode("utf-8", errors="ignore")
     assert "G2 oscillation" in rendered
-    assert "Cmd: PVT" in rendered
-    assert "current_threshold=[200.0000]" in rendered
+    assert "Cmd: MIT" in rendered
+    assert "pos=[ 0.0350]" in rendered
+
+
+def test_screen_robots_persists_airbot_g2_pvt_tracking_mode(monkeypatch) -> None:
+    prompts = iter(["follower_g2", "f", "p"])
+    monkeypatch.setattr(wizard, "_prompt_line", lambda *args, **kwargs: next(prompts))
+    monkeypatch.setattr(wizard, "_get_airbot_robot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wizard.time, "sleep", lambda *args, **kwargs: None)
+
+    configs = wizard._screen_robots(
+        _FakeTerm(["\n"]),
+        io.BytesIO(),
+        [
+            DetectedDevice(
+                kind="robot",
+                dtype="airbot_g2",
+                device_id="can1",
+                label="AIRBOT G2 (can1)",
+                properties={"can_interface": "can1", "num_joints": 1},
+            )
+        ],
+    )
+
+    assert configs == [
+        RobotConfig(
+            name="follower_g2",
+            type="airbot_g2",
+            role="follower",
+            num_joints=1,
+            device="can1",
+            options={"target_tracking_mode": "pvt"},
+            direct_map_allowlist=["airbot_e2b"],
+        )
+    ]
 
 
 def test_screen_cameras_sizes_preview_from_actual_frame(monkeypatch) -> None:

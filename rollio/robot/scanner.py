@@ -1,4 +1,5 @@
 """Robot scanner — detect available robot entities."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -11,10 +12,11 @@ if TYPE_CHECKING:
 @dataclass
 class DetectedRobot:
     """A detected robot device."""
-    robot_type: str              # "pseudo", "airbot_play", etc.
-    device_id: int | str         # CAN interface, serial port, etc.
-    label: str                   # Human-readable description
-    n_dof: int                   # Degrees of freedom
+
+    robot_type: str  # "pseudo", "airbot_play", etc.
+    device_id: int | str  # CAN interface, serial port, etc.
+    label: str  # Human-readable description
+    n_dof: int  # Degrees of freedom
     properties: dict = field(default_factory=dict)
 
 

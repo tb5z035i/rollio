@@ -14,9 +14,9 @@ pytest -m "not hardware"
 - `tests/test_airbot.py` — AIRBOT-specific tests (mocked). Currently the entire module is skipped at collection time because `pytest.importorskip("pinocchio")` in a `@pytest.mark.skipif` decorator triggers a module-level skip. This is expected; the mocked AIRBOT tests will only collect if `pinocchio` is installed.
 - Hardware tests (`-m hardware`) require physical AIRBOT arms on CAN bus and are not runnable in cloud environments.
 
-### No linter configured
+### Linting
 
-The project has no linter (ruff, flake8, mypy, pylint, black) configured in `pyproject.toml` or elsewhere.
+Black and pylint are configured in `pyproject.toml`. Install with `pip install -e .[lint]`. Run `black .` to format and `pylint rollio tests` to lint.
 
 ### CLI entry point
 

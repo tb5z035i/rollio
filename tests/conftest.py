@@ -1,4 +1,5 @@
 """Pytest configuration and shared fixtures."""
+
 from __future__ import annotations
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 def pseudo_robot():
     """Create a pseudo robot arm for testing."""
     from rollio.robot import PseudoRobotArm
-    
+
     robot = PseudoRobotArm(name="test_robot", noise_level=0.0)
     robot.open()
     yield robot
@@ -26,5 +27,5 @@ def enabled_robot(pseudo_robot):
 def kinematics_model():
     """Create a pseudo kinematics model for testing."""
     from rollio.robot import PseudoKinematicsModel
-    
+
     return PseudoKinematicsModel(n_dof=6)

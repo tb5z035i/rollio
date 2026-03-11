@@ -1,4 +1,5 @@
 """Tests for terminal frame rendering helpers."""
+
 from __future__ import annotations
 
 import cv2

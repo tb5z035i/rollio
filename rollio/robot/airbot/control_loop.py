@@ -1,4 +1,5 @@
-"""Internal helpers for AIRBOT-owned control cadence."""
+"""Internal helpers for AIRBOT command replay."""
+
 from __future__ import annotations
 
 import threading
@@ -8,36 +9,7 @@ from time import monotonic
 
 import numpy as np
 
-from rollio.robot.base import ControlMode, JointState, Wrench
-
-
-def clone_joint_state(state: JointState) -> JointState:
-    """Return a detached copy of one joint-state snapshot."""
-    return JointState(
-        timestamp=float(state.timestamp),
-        position=None
-        if state.position is None
-        else np.asarray(state.position, dtype=np.float32).copy(),
-        velocity=None
-        if state.velocity is None
-        else np.asarray(state.velocity, dtype=np.float32).copy(),
-        effort=None
-        if state.effort is None
-        else np.asarray(state.effort, dtype=np.float32).copy(),
-        is_valid=bool(state.is_valid),
-    )
-
-
-def invalid_joint_state(timestamp: float | None = None) -> JointState:
-    """Build an invalid joint-state snapshot."""
-    ts = monotonic() if timestamp is None else float(timestamp)
-    return JointState(
-        timestamp=ts,
-        position=None,
-        velocity=None,
-        effort=None,
-        is_valid=False,
-    )
+from rollio.robot.base import ControlMode, Wrench
 
 
 def clone_wrench(wrench: Wrench | None) -> Wrench | None:
@@ -85,6 +57,24 @@ class AirbotDynamicTrackingIntent:
 
 
 @dataclass(frozen=True)
+class AirbotPvtCommand:
+    """Raw PVT command replayed directly by the command pump."""
+
+    position_target: np.ndarray
+    velocity_target: np.ndarray
+    effort: np.ndarray
+    published_at: float = 0.0
+
+
+AirbotCommand = (
+    AirbotFreeDriveIntent
+    | AirbotFixedTrackingIntent
+    | AirbotDynamicTrackingIntent
+    | AirbotPvtCommand
+)
+
+
+@dataclass(frozen=True)
 class AirbotLoopMetrics:
     """Fixed-rate loop timing snapshot for one AIRBOT device thread."""
 
@@ -107,31 +97,55 @@ class _ModeRequest:
     mode: ControlMode
 
 
-class AirbotIoLoop:
-    """One fixed-rate loop that owns AIRBOT hot-path I/O."""
+class AirbotCommandLease:
+    """Exclusive ownership token for temporary command-slot takeover."""
+
+    def __init__(self, pump: "AirbotCommandPump", owner: str) -> None:
+        self._pump = pump
+        self._owner = owner
+        self._released = False
+
+    @property
+    def owner(self) -> str:
+        return self._owner
+
+    def close(self) -> None:
+        if self._released:
+            return
+        self._pump.release_lease(self._owner)
+        self._released = True
+
+    def __enter__(self) -> "AirbotCommandLease":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        del exc_type, exc, tb
+        self.close()
+        return False
+
+
+class AirbotCommandPump:
+    """One fixed-rate thread that owns AIRBOT write-side I/O."""
 
     def __init__(
         self,
         *,
         name: str,
         period_sec: float,
-        read_joint_state: Callable[[], JointState],
         apply_enabled: Callable[[bool], bool],
         apply_mode: Callable[[ControlMode], bool],
-        cycle: Callable[[JointState, ControlMode], None],
-        initial_joint_state: JointState | None = None,
+        cycle: Callable[[AirbotCommand | None, ControlMode, bool], None],
         initial_enabled: bool = False,
         initial_mode: ControlMode = ControlMode.DISABLED,
     ) -> None:
         self._name = name
         self._period_sec = max(1e-4, float(period_sec))
-        self._read_joint_state = read_joint_state
         self._apply_enabled = apply_enabled
         self._apply_mode = apply_mode
         self._cycle = cycle
-        self._latest_joint_state = clone_joint_state(
-            initial_joint_state or invalid_joint_state()
-        )
+        self._lock = threading.Lock()
+        self._latest_command: AirbotCommand | None = None
+        self._lease_owner: str | None = None
         self._applied_enabled = bool(initial_enabled)
         self._applied_mode = initial_mode if initial_enabled else ControlMode.DISABLED
         self._stop_event = threading.Event()
@@ -181,12 +195,9 @@ class AirbotIoLoop:
         self._wake_event.set()
         thread.join(timeout=max(timeout, self._period_sec))
         self._thread = None
-
-    def wake(self) -> None:
-        self._wake_event.set()
-
-    def latest_joint_state(self) -> JointState:
-        return clone_joint_state(self._latest_joint_state)
+        with self._lock:
+            self._latest_command = None
+            self._lease_owner = None
 
     def metrics(self) -> AirbotLoopMetrics:
         return AirbotLoopMetrics(
@@ -196,6 +207,46 @@ class AirbotIoLoop:
             avg_interval_ms=self._avg_interval_ms,
             max_interval_ms=self._max_interval_ms,
         )
+
+    def publish_command(
+        self,
+        command: AirbotCommand | None,
+        *,
+        owner: str | None = None,
+    ) -> bool:
+        with self._lock:
+            if self._lease_owner is not None and owner != self._lease_owner:
+                return False
+            self._latest_command = command
+        self._wake_event.set()
+        return True
+
+    def reset_command(self) -> None:
+        with self._lock:
+            self._latest_command = None
+        self._wake_event.set()
+
+    def snapshot_command(self) -> AirbotCommand | None:
+        with self._lock:
+            return self._latest_command
+
+    def acquire_lease(self, owner: str) -> AirbotCommandLease | None:
+        normalized_owner = str(owner).strip()
+        if not normalized_owner:
+            raise ValueError("Lease owner must be a non-empty string")
+        with self._lock:
+            if self._lease_owner not in (None, normalized_owner):
+                return None
+            self._lease_owner = normalized_owner
+        self._wake_event.set()
+        return AirbotCommandLease(self, normalized_owner)
+
+    def release_lease(self, owner: str) -> None:
+        normalized_owner = str(owner).strip()
+        with self._lock:
+            if self._lease_owner == normalized_owner:
+                self._lease_owner = None
+        self._wake_event.set()
 
     def request_enabled(self, enabled: bool, timeout: float = 2.0) -> bool:
         if self._thread is None:
@@ -259,18 +310,15 @@ class AirbotIoLoop:
                 continue
 
             self._observe_interval(now)
-
             self._process_enable_request()
             self._process_mode_request()
 
             try:
-                joint_state = self._read_joint_state()
-            except Exception:
-                joint_state = invalid_joint_state(now)
-            self._latest_joint_state = clone_joint_state(joint_state)
-
-            try:
-                self._cycle(self._latest_joint_state, self._applied_mode)
+                self._cycle(
+                    self.snapshot_command(),
+                    self._applied_mode,
+                    self._applied_enabled,
+                )
             except Exception:
                 pass
 
@@ -322,11 +370,7 @@ class AirbotIoLoop:
         ok = False
         try:
             if request.mode == ControlMode.DISABLED:
-                ok = (
-                    self._apply_mode(request.mode)
-                    if self._applied_enabled
-                    else True
-                )
+                ok = self._apply_mode(request.mode) if self._applied_enabled else True
             elif self._applied_enabled:
                 ok = self._apply_mode(request.mode)
         except Exception:
@@ -340,12 +384,12 @@ class AirbotIoLoop:
 
 
 __all__ = [
+    "AirbotCommandLease",
+    "AirbotCommandPump",
     "AirbotDynamicTrackingIntent",
     "AirbotFixedTrackingIntent",
     "AirbotFreeDriveIntent",
     "AirbotLoopMetrics",
-    "AirbotIoLoop",
-    "clone_joint_state",
+    "AirbotPvtCommand",
     "clone_wrench",
-    "invalid_joint_state",
 ]

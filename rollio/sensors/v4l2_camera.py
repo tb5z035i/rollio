@@ -1,4 +1,5 @@
 """V4L2 Camera — real USB camera with format enumeration and live config."""
+
 from __future__ import annotations
 
 import glob
@@ -10,7 +11,12 @@ import cv2
 import numpy as np
 
 from rollio.sensors.base import (
-    CameraChannel, CameraFormat, CameraMode, CameraSettings, ImageSensor, SensorInfo,
+    CameraChannel,
+    CameraFormat,
+    CameraMode,
+    CameraSettings,
+    ImageSensor,
+    SensorInfo,
 )
 from rollio.utils.time import monotonic_sec
 
@@ -27,7 +33,10 @@ def _parse_v4l2_formats(device: str | int) -> list[CameraFormat]:
     try:
         result = subprocess.run(
             ["v4l2-ctl", "-d", dev_path, "--list-formats-ext"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
         if result.returncode != 0:
             return []
     except Exception:
@@ -54,9 +63,8 @@ def _parse_v4l2_formats(device: str | int) -> list[CameraFormat]:
             if current_format:
                 formats.append(current_format)
             current_format = CameraFormat(
-                fourcc=m.group(1),
-                description=m.group(2),
-                modes=[])
+                fourcc=m.group(1), description=m.group(2), modes=[]
+            )
             continue
 
         # Check for size
@@ -70,10 +78,9 @@ def _parse_v4l2_formats(device: str | int) -> list[CameraFormat]:
         m = fps_re.search(line)
         if m and current_format and current_width > 0:
             fps = int(float(m.group(1)))
-            current_format.modes.append(CameraMode(
-                width=current_width,
-                height=current_height,
-                fps=fps))
+            current_format.modes.append(
+                CameraMode(width=current_width, height=current_height, fps=fps)
+            )
 
     if current_format:
         formats.append(current_format)
@@ -89,8 +96,11 @@ def probe_v4l2_formats(device: str | int) -> list[CameraFormat]:
     formats = _parse_v4l2_formats(device)
     if not formats:
         # Fallback: try to get current mode via OpenCV
-        dev_idx = int(device) if isinstance(device, int) else int(
-            device.replace("/dev/video", ""))
+        dev_idx = (
+            int(device)
+            if isinstance(device, int)
+            else int(device.replace("/dev/video", ""))
+        )
         try:
             cap = cv2.VideoCapture(dev_idx, cv2.CAP_V4L2)
             if cap.isOpened():
@@ -98,10 +108,13 @@ def probe_v4l2_formats(device: str | int) -> list[CameraFormat]:
                 h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
                 cap.release()
-                formats = [CameraFormat(
-                    fourcc="AUTO",
-                    description="Auto-detected",
-                    modes=[CameraMode(w, h, fps)])]
+                formats = [
+                    CameraFormat(
+                        fourcc="AUTO",
+                        description="Auto-detected",
+                        modes=[CameraMode(w, h, fps)],
+                    )
+                ]
         except Exception:
             pass
     return formats
@@ -113,7 +126,10 @@ def _get_udev_properties(device: str) -> dict[str, str]:
     try:
         result = subprocess.run(
             ["udevadm", "info", "--query=property", f"--name={device}"],
-            capture_output=True, text=True, timeout=2)
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
                 if "=" in line:
@@ -148,7 +164,9 @@ def _is_realsense_device(device: str) -> bool:
 
     if "realsense" in model or "realsense" in product:
         return True
-    if "intel" in vendor and ("d4" in model or "d5" in model or "l5" in model or "sr3" in model):
+    if "intel" in vendor and (
+        "d4" in model or "d5" in model or "l5" in model or "sr3" in model
+    ):
         # D4xx, D5xx, L5xx, SR3xx series
         return True
 
@@ -208,24 +226,30 @@ class V4L2Camera(ImageSensor):
                                 pix_fmt = "MJPG"
                                 break
 
-                    found.append(DetectedDevice(
-                        kind="camera",
-                        dtype=cls.SENSOR_TYPE,
-                        device_id=idx,
-                        label=f"USB Camera {vdev} ({w}×{h}@{fps}fps)",
-                        properties={},
-                        formats=formats,
-                        id_path=id_path,
-                        channels=[CameraChannel(
-                            name="color",
-                            default_width=w,
-                            default_height=h,
-                            default_fps=fps,
-                            description="RGB Color stream")],
-                        width=w,
-                        height=h,
-                        fps=fps,
-                        pixel_format=pix_fmt))
+                    found.append(
+                        DetectedDevice(
+                            kind="camera",
+                            dtype=cls.SENSOR_TYPE,
+                            device_id=idx,
+                            label=f"USB Camera {vdev} ({w}×{h}@{fps}fps)",
+                            properties={},
+                            formats=formats,
+                            id_path=id_path,
+                            channels=[
+                                CameraChannel(
+                                    name="color",
+                                    default_width=w,
+                                    default_height=h,
+                                    default_fps=fps,
+                                    description="RGB Color stream",
+                                )
+                            ],
+                            width=w,
+                            height=h,
+                            fps=fps,
+                            pixel_format=pix_fmt,
+                        )
+                    )
                 else:
                     cap.release()
             except Exception:
@@ -244,13 +268,22 @@ class V4L2Camera(ImageSensor):
 
     # ── Instance methods ──────────────────────────────────────────────
 
-    def __init__(self, name: str, device: int | str = 0,
-                 width: int = 640, height: int = 480, fps: int = 30,
-                 pixel_format: str = "MJPG") -> None:
+    def __init__(
+        self,
+        name: str,
+        device: int | str = 0,
+        width: int = 640,
+        height: int = 480,
+        fps: int = 30,
+        pixel_format: str = "MJPG",
+    ) -> None:
         self._name = name
         self._device = device
-        self._device_idx = int(device) if isinstance(device, int) else int(
-            str(device).replace("/dev/video", ""))
+        self._device_idx = (
+            int(device)
+            if isinstance(device, int)
+            else int(str(device).replace("/dev/video", ""))
+        )
         self._width = width
         self._height = height
         self._fps = fps
@@ -311,7 +344,8 @@ class V4L2Camera(ImageSensor):
                 "type": "v4l2",
                 "device": self._device,
                 "pixel_format": self._pixel_format,
-            })
+            },
+        )
 
     @property
     def width(self) -> int:
@@ -341,10 +375,12 @@ class V4L2Camera(ImageSensor):
             width=self._width,
             height=self._height,
             fps=self._fps,
-            pixel_format=self._pixel_format)
+            pixel_format=self._pixel_format,
+        )
 
-    def apply_config(self, width: int, height: int, fps: int,
-                     pixel_format: str) -> bool:
+    def apply_config(
+        self, width: int, height: int, fps: int, pixel_format: str
+    ) -> bool:
         """Apply new configuration. Camera must be open."""
         self._width = width
         self._height = height

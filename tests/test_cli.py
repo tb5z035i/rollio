@@ -1,4 +1,5 @@
 """Tests for rollio CLI argument handling."""
+
 from __future__ import annotations
 
 import contextlib

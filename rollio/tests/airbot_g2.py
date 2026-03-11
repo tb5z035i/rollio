@@ -5,6 +5,7 @@ standalone AIRBOT G2 gripper. The goal is not just to send commands, but to
 measure whether the actual position follows the commanded target with a small
 allowed latency.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -167,6 +168,7 @@ class _RollioG2Controller:
         self._robot = AIRBOTG2(
             can_interface=self._can_interface,
             control_frequency=self._control_frequency,
+            target_tracking_mode="pvt",
         )
         self._robot.open()
         if not self._robot.enable():
@@ -321,9 +323,17 @@ def _run_fixed_sequence(
             print_hz=print_hz,
             verbose=verbose,
         )
-        final_actual = "nan" if result.final_actual is None else f"{result.final_actual:.4f}"
-        final_error = "nan" if result.final_error is None else f"{result.final_error:+.4f}"
-        settle = "timeout" if result.settle_time_sec is None else f"{result.settle_time_sec:.2f}s"
+        final_actual = (
+            "nan" if result.final_actual is None else f"{result.final_actual:.4f}"
+        )
+        final_error = (
+            "nan" if result.final_error is None else f"{result.final_error:+.4f}"
+        )
+        settle = (
+            "timeout"
+            if result.settle_time_sec is None
+            else f"{result.settle_time_sec:.2f}s"
+        )
         print(
             f"[{controller.name}] fixed target {target:.4f} -> "
             f"{'PASS' if result.success else 'FAIL'}  "
@@ -348,7 +358,9 @@ def _analyze_tracking(
     for actual_time, actual in zip(actual_times, actual_positions, strict=False):
         best_error: float | None = None
         best_lag: float | None = None
-        for command_time, command_target in zip(command_times, command_targets, strict=False):
+        for command_time, command_target in zip(
+            command_times, command_targets, strict=False
+        ):
             lag = actual_time - command_time
             if lag < 0.0:
                 break
@@ -438,7 +450,9 @@ def _run_sine_tracking(
 
         if verbose and (now - last_print >= print_period):
             actual_text = "nan" if last_actual is None else f"{last_actual:7.4f}"
-            error_text = "nan" if last_actual is None else f"{last_actual - target:+7.4f}"
+            error_text = (
+                "nan" if last_actual is None else f"{last_actual - target:+7.4f}"
+            )
             debug_text = controller.latest_debug() or ""
             print(
                 f"\r[{controller.name}] t={t:6.2f}s tgt={target:7.4f} "
@@ -513,7 +527,9 @@ def _run_one_mode(
             )
         elif mode.endswith("_sine"):
             if verbose:
-                print(f"[{controller.name}] centering at {center:.4f} before sine tracking")
+                print(
+                    f"[{controller.name}] centering at {center:.4f} before sine tracking"
+                )
             _run_fixed_target(
                 controller,
                 center,
@@ -592,7 +608,11 @@ def test_sine_position(
         print(f"Error: {exc}")
         return False
 
-    fixed_targets = [max(0.0, center - amplitude), center, min(0.072, center + amplitude)]
+    fixed_targets = [
+        max(0.0, center - amplitude),
+        center,
+        min(0.072, center + amplitude),
+    ]
     if duration is None:
         duration = max(6.0, 2.0 * period)
 

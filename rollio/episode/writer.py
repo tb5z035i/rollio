@@ -1,4 +1,5 @@
 """Episode writer — saves episodes in LeRobot v2.1 format."""
+
 from __future__ import annotations
 
 import json
@@ -178,14 +179,18 @@ class LeRobotV21Writer:
             for _, frame in frames:
                 arr = np.asarray(frame)
                 if arr.shape[:2] != (h, w):
-                    raise ValueError("All frames in one stream must share the same resolution")
+                    raise ValueError(
+                        "All frames in one stream must share the same resolution"
+                    )
                 if proc.stdin is None:
                     raise RuntimeError("ffmpeg stdin was not created")
                 proc.stdin.write(arr.tobytes())
         finally:
             if proc.stdin is not None:
                 proc.stdin.close()
-        stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+        stderr = (
+            proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+        )
         return_code = proc.wait()
         if return_code != 0:
             if codec_option.kind == "rgb":
@@ -241,8 +246,7 @@ class LeRobotV21Writer:
         for rob_name in self._robot_names:
             state_list = ep.robot_states.get(rob_name, [])
             sampled_states[rob_name] = [
-                self._sample_state_at(state_list, ts)
-                for ts in timestamps
+                self._sample_state_at(state_list, ts) for ts in timestamps
             ]
 
         sampled_actions: dict[str, list[np.ndarray]] = {}
@@ -251,8 +255,7 @@ class LeRobotV21Writer:
             dim = int(entry["dim"])
             pair_actions = ep.pair_actions.get(pair_name, [])
             sampled_actions[pair_name] = [
-                self._sample_vector_at(pair_actions, ts, dim)
-                for ts in timestamps
+                self._sample_vector_at(pair_actions, ts, dim) for ts in timestamps
             ]
 
         for i, ts in enumerate(timestamps):
@@ -297,7 +300,11 @@ class LeRobotV21Writer:
         else:
             prev_ts = state_timestamps[idx - 1]
             next_ts = state_timestamps[idx]
-            chosen = state_list[idx - 1][1] if abs(timestamp - prev_ts) <= abs(next_ts - timestamp) else state_list[idx][1]
+            chosen = (
+                state_list[idx - 1][1]
+                if abs(timestamp - prev_ts) <= abs(next_ts - timestamp)
+                else state_list[idx][1]
+            )
 
         return {
             key: np.asarray(value, dtype=np.float32).reshape(-1)
@@ -322,7 +329,11 @@ class LeRobotV21Writer:
         else:
             prev_ts = vector_timestamps[idx - 1]
             next_ts = vector_timestamps[idx]
-            chosen = vectors[idx - 1][1] if abs(timestamp - prev_ts) <= abs(next_ts - timestamp) else vectors[idx][1]
+            chosen = (
+                vectors[idx - 1][1]
+                if abs(timestamp - prev_ts) <= abs(next_ts - timestamp)
+                else vectors[idx][1]
+            )
         out = np.zeros(dim, dtype=np.float32)
         chosen_arr = np.asarray(chosen, dtype=np.float32).reshape(-1)
         out[: min(dim, chosen_arr.size)] = chosen_arr[:dim]
@@ -353,11 +364,14 @@ class LeRobotV21Writer:
 
         for cam_name in self._camera_names:
             key = f"observation.images.{cam_name}"
-            video_info = self._camera_video_info.get(cam_name, {
-                "codec": self._video_codec.name,
-                "fps": self._fps,
-                "extension": self._video_codec.file_extension,
-            })
+            video_info = self._camera_video_info.get(
+                cam_name,
+                {
+                    "codec": self._video_codec.name,
+                    "fps": self._fps,
+                    "extension": self._video_codec.file_extension,
+                },
+            )
             features[key] = {
                 "dtype": "video",
                 "shape": [],  # filled per-video
@@ -384,14 +398,13 @@ class LeRobotV21Writer:
             "total_episodes": self._total_episodes,
             "total_frames": self._total_frames,
             "data_path": "data/chunk-{episode_chunk:03d}/"
-                         "episode_{episode_index:06d}.parquet",
+            "episode_{episode_index:06d}.parquet",
             "video_path": "videos/chunk-{episode_chunk:03d}/"
-                          "{video_key}/episode_{episode_index:06d}{video_extension}",
+            "{video_key}/episode_{episode_index:06d}{video_extension}",
             "features": features,
             "action_layout": self._action_layout,
         }
-        (meta_dir / "info.json").write_text(
-            json.dumps(info, indent=2) + "\n")
+        (meta_dir / "info.json").write_text(json.dumps(info, indent=2) + "\n")
 
     def _learn_schema_from_episode(self, ep: EpisodeData) -> None:
         if not self._camera_names:

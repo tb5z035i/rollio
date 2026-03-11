@@ -5,6 +5,7 @@ This module provides abstractions for robot arm control, including:
 - Control modes (free drive, target tracking)
 - Kinematics interfaces (FK, IK, Jacobian, inverse dynamics)
 """
+
 from rollio.robot.base import (
     # Enums
     ControlMode,
@@ -68,6 +69,7 @@ def robot_class_for_type(robot_type: str) -> type[RobotArm] | None:
         if cls is not None and getattr(cls, "ROBOT_TYPE", None) == key:
             return cls
     return None
+
 
 __all__ = [
     # Enums

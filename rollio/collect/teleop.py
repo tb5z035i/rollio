@@ -1,4 +1,5 @@
 """Tele-operation mapping strategies."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +7,7 @@ from typing import Literal
 
 import numpy as np
 
-from rollio.robot import Pose, RobotArm
+from rollio.robot import JointState, Pose, RobotArm
 
 MapperMode = Literal["auto", "joint_direct", "pose_fk_ik"]
 ResolvedMapperMode = Literal["joint_direct", "pose_fk_ik", "noop"]
@@ -14,9 +15,7 @@ ResolvedMapperMode = Literal["joint_direct", "pose_fk_ik", "noop"]
 
 def _direct_map_allowlist(robot: RobotArm) -> set[str]:
     return {
-        str(item).strip()
-        for item in robot.direct_map_allowlist
-        if str(item).strip()
+        str(item).strip() for item in robot.direct_map_allowlist if str(item).strip()
     }
 
 
@@ -33,11 +32,7 @@ def supports_joint_direct_runtime(leader: RobotArm, follower: RobotArm) -> bool:
 
 def supports_pose_fkik_runtime(leader: RobotArm, follower: RobotArm) -> bool:
     """Return True when a runtime pair should use pose FK/IK."""
-    return (
-        leader.has_frame_pose_feedback
-        and leader.n_dof > 1
-        and follower.n_dof > 1
-    )
+    return leader.has_frame_pose_feedback and leader.n_dof > 1 and follower.n_dof > 1
 
 
 @dataclass
@@ -48,6 +43,7 @@ class TeleopCommand:
     position_target: np.ndarray | None
     velocity_target: np.ndarray | None
     leader_pose: Pose | None = None
+    leader_joint_state: JointState | None = None
 
     @classmethod
     def noop(cls) -> "TeleopCommand":
@@ -56,6 +52,7 @@ class TeleopCommand:
             position_target=None,
             velocity_target=None,
             leader_pose=None,
+            leader_joint_state=None,
         )
 
 
@@ -102,6 +99,7 @@ class JointSpaceDirectMapper(TeleopMapper):
             position_target=np.asarray(leader_state.position, dtype=np.float64),
             velocity_target=np.asarray(velocity, dtype=np.float64),
             leader_pose=None,
+            leader_joint_state=leader_state,
         )
 
 
@@ -161,6 +159,7 @@ class PoseSpaceFkIkMapper(TeleopMapper):
             position_target=np.asarray(q_target, dtype=np.float64),
             velocity_target=np.zeros(follower.n_dof, dtype=np.float64),
             leader_pose=leader_frame.pose,
+            leader_joint_state=leader_joint_state,
         )
 
 

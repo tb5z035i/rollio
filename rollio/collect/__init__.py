@@ -1,4 +1,5 @@
 """Asynchronous collection runtime."""
+
 from rollio.collect.camera_bridge import (
     FrameSample,
     FrameSourceMetrics,

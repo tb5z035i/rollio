@@ -1,4 +1,5 @@
 """Tests for pairing and codec-related config helpers."""
+
 from __future__ import annotations
 
 import subprocess
@@ -26,20 +27,26 @@ def _robots() -> list[RobotConfig]:
         RobotConfig(name="leader_a", type="pseudo", role="leader", num_joints=6),
         RobotConfig(name="leader_b", type="airbot_play", role="leader", num_joints=6),
         RobotConfig(name="follower_a", type="pseudo", role="follower", num_joints=6),
-        RobotConfig(name="follower_b", type="airbot_play", role="follower", num_joints=6),
+        RobotConfig(
+            name="follower_b", type="airbot_play", role="follower", num_joints=6
+        ),
     ]
 
 
 def test_default_mapper_prefers_direct_for_compatible_pairs() -> None:
     leader = RobotConfig(name="leader", type="pseudo", role="leader", num_joints=6)
-    follower = RobotConfig(name="follower", type="pseudo", role="follower", num_joints=6)
+    follower = RobotConfig(
+        name="follower", type="pseudo", role="follower", num_joints=6
+    )
 
     assert default_mapper_for_pair(leader, follower) == "joint_direct"
 
 
 def test_default_mapper_uses_fkik_for_mixed_robot_types() -> None:
     leader = RobotConfig(name="leader", type="pseudo", role="leader", num_joints=6)
-    follower = RobotConfig(name="follower", type="airbot_play", role="follower", num_joints=6)
+    follower = RobotConfig(
+        name="follower", type="airbot_play", role="follower", num_joints=6
+    )
 
     assert default_mapper_for_pair(leader, follower) == "pose_fk_ik"
 
@@ -91,8 +98,12 @@ def test_suggest_teleop_pairs_uses_supported_airbot_eef_direction() -> None:
     robots = [
         RobotConfig(name="leader_e2b", type="airbot_e2b", role="leader", num_joints=1),
         RobotConfig(name="leader_g2", type="airbot_g2", role="leader", num_joints=1),
-        RobotConfig(name="follower_g2", type="airbot_g2", role="follower", num_joints=1),
-        RobotConfig(name="follower_e2b", type="airbot_e2b", role="follower", num_joints=1),
+        RobotConfig(
+            name="follower_g2", type="airbot_g2", role="follower", num_joints=1
+        ),
+        RobotConfig(
+            name="follower_e2b", type="airbot_e2b", role="follower", num_joints=1
+        ),
     ]
 
     pairs = suggest_teleop_pairs(robots)
@@ -201,6 +212,29 @@ def test_airbot_play_target_tracking_mode_rejects_invalid_option() -> None:
         )
 
 
+def test_airbot_g2_target_tracking_mode_normalizes_in_robot_options() -> None:
+    cfg = RobotConfig(
+        name="g2_cfg",
+        type="airbot_g2",
+        role="follower",
+        num_joints=1,
+        options={"target_tracking_mode": "PVT"},
+    )
+
+    assert cfg.options["target_tracking_mode"] == "pvt"
+
+
+def test_airbot_g2_target_tracking_mode_rejects_invalid_option() -> None:
+    with pytest.raises(ValueError, match="target_tracking_mode"):
+        RobotConfig(
+            name="g2_cfg",
+            type="airbot_g2",
+            role="follower",
+            num_joints=1,
+            options={"target_tracking_mode": "invalid"},
+        )
+
+
 def test_codec_option_lookup_supports_aliases() -> None:
     assert get_rgb_codec_option("mp4v").name == "mpeg4"
     assert get_depth_codec_option("raw").name == "rawvideo"
@@ -210,12 +244,14 @@ def test_available_rgb_codecs_keep_nvenc_when_probe_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     commands: list[list[str]] = []
-    encoder_output = "\n".join([
-        "Encoders:",
-        " V..... h264_nvenc           NVIDIA NVENC H.264 encoder",
-        " V..... libx264              libx264 H.264 / AVC",
-        " V..... mpeg4                MPEG-4 part 2",
-    ])
+    encoder_output = "\n".join(
+        [
+            "Encoders:",
+            " V..... h264_nvenc           NVIDIA NVENC H.264 encoder",
+            " V..... libx264              libx264 H.264 / AVC",
+            " V..... mpeg4                MPEG-4 part 2",
+        ]
+    )
 
     def fake_run(
         command: list[str],
@@ -226,7 +262,9 @@ def test_available_rgb_codecs_keep_nvenc_when_probe_succeeds(
         del capture_output, text, timeout
         commands.append(command)
         if command == ["ffmpeg", "-hide_banner", "-encoders"]:
-            return subprocess.CompletedProcess(command, 0, stdout=encoder_output, stderr="")
+            return subprocess.CompletedProcess(
+                command, 0, stdout=encoder_output, stderr=""
+            )
         if command[0] == "ffmpeg":
             if command[command.index("-c:v") + 1] == "h264_nvenc":
                 assert codecs.RGB_PROBE_SOURCE in command

@@ -1,4 +1,5 @@
 """Tests for setup-facing sensor scanning helpers."""
+
 from __future__ import annotations
 
 from rollio.robot.scanner import DetectedRobot

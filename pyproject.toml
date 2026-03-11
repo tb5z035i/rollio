@@ -22,6 +22,7 @@ realsense = ["pyrealsense2"]
 airbot = ["pin", "python-can>=4.0"]
 completion = ["argcomplete>=3.0"]
 test = ["pytest>=7.0", "pytest-cov>=4.0"]
+lint = ["black>=24.0", "pylint>=3.0"]
 all = ["argcomplete>=3.0"]
 
 [project.scripts]
@@ -36,4 +37,24 @@ include = ["rollio*"]
 [tool.pytest.ini_options]
 markers = [
     "hardware: marks tests that require actual hardware (deselect with '-m \"not hardware\"')",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+extend-exclude = "external"
+
+[tool.pylint.main]
+py-version = "3.11"
+jobs = 0
+ignore-paths = ["^external/", "^build/", "^dist/"]
+
+[tool.pylint.format]
+max-line-length = 88
+
+[tool.pylint.messages_control]
+disable = [
+    "import-error",
+    "no-name-in-module",
+    "redefined-outer-name",
 ]

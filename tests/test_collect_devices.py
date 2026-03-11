@@ -1,4 +1,5 @@
 """Tests for pluggable device factories and extensibility hooks."""
+
 from __future__ import annotations
 
 import time
@@ -13,7 +14,14 @@ from rollio.collect import (
     register_camera_factory,
     register_robot_factory,
 )
-from rollio.config import CameraConfig, EncoderConfig, RollioConfig, RobotConfig, StorageConfig, TeleopPairConfig
+from rollio.config import (
+    CameraConfig,
+    EncoderConfig,
+    RollioConfig,
+    RobotConfig,
+    StorageConfig,
+    TeleopPairConfig,
+)
 from rollio.robot import PseudoRobotArm
 from rollio.sensors import PseudoCamera
 
@@ -121,8 +129,12 @@ def test_runtime_accepts_registered_backend_types(tmp_path: Path) -> None:
         time.sleep(0.15)
         metrics = runtime.scheduler_metrics()
 
-        assert runtime._cameras["cam_ext"].info().name == "cam_ext-camera"  # noqa: SLF001
-        assert runtime._robots["leader_ext"].info.name == "leader_ext-robot"  # noqa: SLF001
+        assert (
+            runtime._cameras["cam_ext"].info().name == "cam_ext-camera"
+        )  # noqa: SLF001
+        assert (
+            runtime._robots["leader_ext"].info.name == "leader_ext-robot"
+        )  # noqa: SLF001
         assert metrics["driver"].task_metrics["teleop-pair_ext"].run_count > 0
     finally:
         runtime.close()

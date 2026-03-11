@@ -1,4 +1,5 @@
 """Pseudo camera — generates frames with an incrementing frame counter."""
+
 from __future__ import annotations
 
 import math
@@ -8,7 +9,11 @@ import cv2
 import numpy as np
 
 from rollio.sensors.base import (
-    CameraChannel, CameraFormat, CameraMode, ImageSensor, SensorInfo,
+    CameraChannel,
+    CameraFormat,
+    CameraMode,
+    ImageSensor,
+    SensorInfo,
 )
 from rollio.utils.time import monotonic_sec
 
@@ -31,43 +36,55 @@ class PseudoCamera(ImageSensor):
         """Return a single pseudo camera device."""
         from rollio.sensors.scanner import DetectedDevice
 
-        return [DetectedDevice(
-            kind="camera",
-            dtype=cls.SENSOR_TYPE,
-            device_id=0,
-            label="Pseudo Camera (test pattern)",
-            properties={},
-            formats=[CameraFormat(
+        return [
+            DetectedDevice(
+                kind="camera",
+                dtype=cls.SENSOR_TYPE,
+                device_id=0,
+                label="Pseudo Camera (test pattern)",
+                properties={},
+                formats=[
+                    CameraFormat(
+                        fourcc="RGB",
+                        description="RGB24",
+                        modes=[
+                            CameraMode(640, 480, 30),
+                            CameraMode(320, 240, 30),
+                            CameraMode(1280, 720, 30),
+                        ],
+                    )
+                ],
+                id_path="",
+                channels=[
+                    CameraChannel(
+                        name="color",
+                        default_width=640,
+                        default_height=480,
+                        default_fps=30,
+                        description="Synthetic RGB pattern",
+                    )
+                ],
+                width=640,
+                height=480,
+                fps=30,
+                pixel_format="RGB",
+            )
+        ]
+
+    @classmethod
+    def probe_formats(cls, device_id: int | str) -> list[CameraFormat]:
+        """Return pseudo formats (any resolution is supported)."""
+        return [
+            CameraFormat(
                 fourcc="RGB",
                 description="RGB24",
                 modes=[
                     CameraMode(640, 480, 30),
                     CameraMode(320, 240, 30),
                     CameraMode(1280, 720, 30),
-                ])],
-            id_path="",
-            channels=[CameraChannel(
-                name="color",
-                default_width=640,
-                default_height=480,
-                default_fps=30,
-                description="Synthetic RGB pattern")],
-            width=640,
-            height=480,
-            fps=30,
-            pixel_format="RGB")]
-
-    @classmethod
-    def probe_formats(cls, device_id: int | str) -> list[CameraFormat]:
-        """Return pseudo formats (any resolution is supported)."""
-        return [CameraFormat(
-            fourcc="RGB",
-            description="RGB24",
-            modes=[
-                CameraMode(640, 480, 30),
-                CameraMode(320, 240, 30),
-                CameraMode(1280, 720, 30),
-            ])]
+                ],
+            )
+        ]
 
     @classmethod
     def get_channels(cls) -> list[CameraChannel]:
@@ -76,9 +93,13 @@ class PseudoCamera(ImageSensor):
 
     # ── Instance methods ──────────────────────────────────────────────
 
-    def __init__(self, name: str = "pseudo_cam",
-                 width: int = 640, height: int = 480,
-                 fps: int = 30) -> None:
+    def __init__(
+        self,
+        name: str = "pseudo_cam",
+        width: int = 640,
+        height: int = 480,
+        fps: int = 30,
+    ) -> None:
         self._name = name
         self._w = width
         self._h = height
@@ -108,9 +129,15 @@ class PseudoCamera(ImageSensor):
 
     def info(self) -> SensorInfo:
         return SensorInfo(
-            name=self._name, sensor_type="camera",
-            properties={"width": self._w, "height": self._h,
-                        "fps": self._fps, "type": "pseudo"})
+            name=self._name,
+            sensor_type="camera",
+            properties={
+                "width": self._w,
+                "height": self._h,
+                "fps": self._fps,
+                "type": "pseudo",
+            },
+        )
 
     @property
     def width(self) -> int:
@@ -131,27 +158,45 @@ class PseudoCamera(ImageSensor):
         t = n / max(self._fps, 1)
 
         # Slowly shifting colour gradient
-        r = ((self._grid_y + math.sin(t * 0.3) * 0.3) * 200 + 30)
-        g = ((self._grid_x + math.cos(t * 0.5) * 0.3) * 180 + 40)
-        b = (((self._grid_x + self._grid_y) * 0.5
-              + math.sin(t * 0.7) * 0.3) * 200 + 30)
+        r = (self._grid_y + math.sin(t * 0.3) * 0.3) * 200 + 30
+        g = (self._grid_x + math.cos(t * 0.5) * 0.3) * 180 + 40
+        b = ((self._grid_x + self._grid_y) * 0.5 + math.sin(t * 0.7) * 0.3) * 200 + 30
 
-        frame = np.stack([
-            np.clip(b, 0, 255).astype(np.uint8),
-            np.clip(g, 0, 255).astype(np.uint8),
-            np.clip(r, 0, 255).astype(np.uint8),
-        ], axis=2)
+        frame = np.stack(
+            [
+                np.clip(b, 0, 255).astype(np.uint8),
+                np.clip(g, 0, 255).astype(np.uint8),
+                np.clip(r, 0, 255).astype(np.uint8),
+            ],
+            axis=2,
+        )
 
         # Overlay frame number
         text = f"#{n:06d}"
         org = (self._w // 2 - 120, self._h // 2 + 20)
-        cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
-                    2.0, (255, 255, 255), 4, cv2.LINE_AA)
-        cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX,
-                    2.0, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            text,
+            org,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            2.0,
+            (255, 255, 255),
+            4,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 0), 2, cv2.LINE_AA
+        )
 
         # Small label
-        cv2.putText(frame, self._name, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                    (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            self._name,
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
+        )
         return frame

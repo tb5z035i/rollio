@@ -2,6 +2,7 @@
 
 Tests for verifying AIRBOT Play robot arm functionality.
 """
+
 from __future__ import annotations
 
 import signal
@@ -28,17 +29,17 @@ def test_gravity_compensation(
     return_to_zero: bool = True,
 ) -> bool:
     """Test AIRBOT Play gravity compensation (free drive mode).
-    
+
     This test puts the robot in free drive mode with gravity compensation,
     allowing manual guidance of the arm. The robot should feel "weightless"
     and stay in place when released.
-    
+
     Args:
         can_interface: CAN interface name (e.g., "can0")
         duration: Test duration in seconds (None for indefinite, Ctrl+C to stop)
         verbose: Print status messages
         return_to_zero: If True, return arm to zero position when test ends
-        
+
     Returns:
         True if test completed successfully
     """
@@ -48,18 +49,18 @@ def test_gravity_compensation(
         probe_airbot_device,
         scan_can_interfaces,
     )
-    
+
     # Check dependencies
     if not is_airbot_available():
         print("Error: airbot_hardware_py is not installed.")
         print("Install with: pip install airbot_hardware_py")
         return False
-    
+
     # First, scan and print available AIRBOT arms
     if verbose:
         print("Scanning for available AIRBOT Play arms...")
         print()
-        
+
         can_interfaces = scan_can_interfaces()
         if not can_interfaces:
             print("  No CAN interfaces found.")
@@ -68,7 +69,7 @@ def test_gravity_compensation(
             for iface in can_interfaces:
                 is_up = is_can_interface_up(iface)
                 status = "UP" if is_up else "DOWN"
-                
+
                 if is_up:
                     is_airbot = probe_airbot_device(iface, timeout=0.5)
                     if is_airbot:
@@ -78,52 +79,54 @@ def test_gravity_compensation(
                         print(f"  {iface}: [{status}] No AIRBOT device")
                 else:
                     print(f"  {iface}: [{status}]")
-            
+
             if not found_any:
                 print("\n  No AIRBOT Play devices detected on any interface.")
-        
+
         print()
-    
+
     # Check CAN interface
     if not is_can_interface_up(can_interface):
         print(f"Error: CAN interface '{can_interface}' is not available or not UP.")
         print(f"Run: sudo ip link set {can_interface} up type can bitrate 1000000")
         return False
-    
+
     # Set up signal handler for graceful shutdown
     original_handler = signal.signal(signal.SIGINT, _signal_handler)
-    
+
     robot: AIRBOTPlay | None = None
-    
+
     try:
         if verbose:
             print(f"Connecting to AIRBOT Play on {can_interface}...")
-        
+
         robot = AIRBOTPlay(can_interface=can_interface)
         robot.open()
-        
+
         if verbose:
             print("Enabling motors...")
-        
+
         robot.enable()
-        
+
         if verbose:
             print("Entering free drive mode with gravity compensation...")
             print("\n" + "=" * 60)
             print("  GRAVITY COMPENSATION TEST")
             print("=" * 60)
             print("\nThe robot should now feel 'weightless'.")
-            print("You can manually guide the arm - it should stay in place when released.")
+            print(
+                "You can manually guide the arm - it should stay in place when released."
+            )
             print("\nPress Ctrl+C to stop the test.\n")
-        
+
         # Enter free drive mode
         if not robot.enter_free_drive():
             print("Error: Failed to enter free drive mode.")
             return False
-        
+
         start_time = time.monotonic()
         iteration = 0
-        
+
         # Main control loop
         while True:
             # Check duration
@@ -132,48 +135,52 @@ def test_gravity_compensation(
                 if verbose:
                     print(f"\nTest duration ({duration}s) completed.")
                 break
-            
+
             # Read current state
             joint_state = robot.read_joint_state()
-            
+
             if not joint_state.is_valid:
                 print("Warning: Invalid joint state received")
                 time.sleep(0.01)
                 continue
-            
+
             # Send free drive command (gravity compensation only)
             robot.step_free_drive()
-            
+
             # Print status periodically
             if verbose and iteration % 250 == 0:  # ~1Hz at 250Hz control rate
                 pos = joint_state.position
                 if pos is not None:
                     pos_str = " ".join(f"{p:+6.2f}" for p in pos)
-                    print(f"\rJoints: [{pos_str}]  Time: {elapsed:.1f}s", end="", flush=True)
-            
+                    print(
+                        f"\rJoints: [{pos_str}]  Time: {elapsed:.1f}s",
+                        end="",
+                        flush=True,
+                    )
+
             iteration += 1
-            
+
             # Control loop timing (~250Hz)
             time.sleep(0.004)
-        
+
         if verbose:
             print("\n\nTest completed successfully!")
-        
+
         return True
-        
+
     except KeyboardInterrupt:
         if verbose:
             print("\n\nTest stopped by user.")
         return True
-        
+
     except Exception as e:
         print(f"\nError during test: {e}")
         return False
-        
+
     finally:
         # Restore signal handler
         signal.signal(signal.SIGINT, original_handler)
-        
+
         # Clean up robot
         if robot is not None:
             try:
@@ -181,17 +188,19 @@ def test_gravity_compensation(
                 if return_to_zero and robot._is_enabled:
                     if verbose:
                         print("\nReturning to zero position...")
-                    
+
                     success = robot.move_to_home(timeout=15.0)
                     if verbose:
                         if success:
                             print("Returned to zero position.")
                         else:
-                            print("Warning: Could not reach zero position within timeout.")
-                
+                            print(
+                                "Warning: Could not reach zero position within timeout."
+                            )
+
                 if verbose:
                     print("Disabling motors and closing connection...")
-                
+
                 robot.disable()
                 robot.close()
             except Exception:
@@ -204,14 +213,14 @@ def test_identify(
     verbose: bool = True,
 ) -> bool:
     """Test AIRBOT Play LED identification.
-    
+
     Blinks the robot's LED orange for identification.
-    
+
     Args:
         can_interface: CAN interface name
         duration: How long to blink (seconds)
         verbose: Print status messages
-        
+
     Returns:
         True if test completed successfully
     """
@@ -221,12 +230,12 @@ def test_identify(
         scan_can_interfaces,
         set_airbot_led,
     )
-    
+
     # First, scan and print available AIRBOT arms
     if verbose:
         print("Scanning for available AIRBOT Play arms...")
         print()
-        
+
         can_interfaces = scan_can_interfaces()
         if not can_interfaces:
             print("  No CAN interfaces found.")
@@ -235,7 +244,7 @@ def test_identify(
             for iface in can_interfaces:
                 is_up = is_can_interface_up(iface)
                 status = "UP" if is_up else "DOWN"
-                
+
                 if is_up:
                     # Probe for AIRBOT device
                     is_airbot = probe_airbot_device(iface, timeout=0.5)
@@ -246,37 +255,37 @@ def test_identify(
                         print(f"  {iface}: [{status}] No AIRBOT device")
                 else:
                     print(f"  {iface}: [{status}]")
-            
+
             if not found_any:
                 print("\n  No AIRBOT Play devices detected on any interface.")
-        
+
         print()
-    
+
     # Check if specified interface is available
     if not is_can_interface_up(can_interface):
         print(f"Error: CAN interface '{can_interface}' is not available or not UP.")
         return False
-    
+
     try:
         if verbose:
             print(f"Blinking LED on {can_interface} for {duration}s...")
-        
+
         # Start blinking
         if not set_airbot_led(can_interface, blink_orange=True):
             print("Error: Failed to start LED blinking.")
             return False
-        
+
         time.sleep(duration)
-        
+
         # Stop blinking
         if not set_airbot_led(can_interface, blink_orange=False):
             print("Warning: Failed to stop LED blinking.")
-        
+
         if verbose:
             print("LED test completed.")
-        
+
         return True
-        
+
     except Exception as e:
         print(f"Error: {e}")
         return False
@@ -353,8 +362,10 @@ def test_sine_swing(
         if verbose:
             print("Moving to zero position…")
         if not robot.move_to_home(timeout=15.0):
-            print("Warning: could not reach zero position within timeout, "
-                  "continuing anyway.")
+            print(
+                "Warning: could not reach zero position within timeout, "
+                "continuing anyway."
+            )
         time.sleep(0.3)
 
         # ── Phase 2: sine swing ──────────────────────────────────
@@ -362,8 +373,10 @@ def test_sine_swing(
             print()
             print("=" * 60)
             print(f"  SINE SWING TEST  (joint {joint})")
-            print(f"  amplitude={amplitude:.3f} rad  "
-                  f"period={period:.2f}s  kp={kp}  kd={kd}")
+            print(
+                f"  amplitude={amplitude:.3f} rad  "
+                f"period={period:.2f}s  kp={kp}  kd={kd}"
+            )
             print("=" * 60)
             print("\nPress Ctrl+C to stop.\n")
 
@@ -406,11 +419,15 @@ def test_sine_swing(
                     target = q_target[joint]
                     err = actual - target
                     pos_str = " ".join(f"{p:+6.2f}" for p in js.position)
-                    print(f"\r  t={t:5.1f}s  "
-                          f"tgt={target:+6.3f}  "
-                          f"act={actual:+6.3f}  "
-                          f"err={err:+6.3f}  "
-                          f"[{pos_str}]", end="", flush=True)
+                    print(
+                        f"\r  t={t:5.1f}s  "
+                        f"tgt={target:+6.3f}  "
+                        f"act={actual:+6.3f}  "
+                        f"err={err:+6.3f}  "
+                        f"[{pos_str}]",
+                        end="",
+                        flush=True,
+                    )
 
             iteration += 1
             time.sleep(robot._dt)
@@ -427,6 +444,7 @@ def test_sine_swing(
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -454,11 +472,11 @@ TESTS = {
 
 def run_test(test_name: str, **kwargs) -> bool:
     """Run a named test.
-    
+
     Args:
         test_name: Name of the test to run
         **kwargs: Arguments to pass to the test function
-        
+
     Returns:
         True if test passed
     """
@@ -466,5 +484,5 @@ def run_test(test_name: str, **kwargs) -> bool:
         print(f"Unknown test: {test_name}")
         print(f"Available tests: {', '.join(TESTS.keys())}")
         return False
-    
+
     return TESTS[test_name](**kwargs)

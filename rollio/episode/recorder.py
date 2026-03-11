@@ -1,4 +1,5 @@
 """Episode recorder — orchestrates multi-sensor recording with timestamps."""
+
 from __future__ import annotations
 
 import threading
@@ -14,21 +15,25 @@ from rollio.utils.time import EpisodeClock
 @dataclass
 class EpisodeData:
     """Collected data for one completed episode."""
+
     episode_index: int
     fps: int
-    duration: float                                # seconds
+    duration: float  # seconds
 
     # Per-camera: list of (relative_timestamp, bgr_frame)
     camera_frames: dict[str, list[tuple[float, np.ndarray]]] = field(
-        default_factory=dict)
+        default_factory=dict
+    )
 
     # Per-robot: list of (relative_timestamp, state_dict)
     robot_states: dict[str, list[tuple[float, dict[str, np.ndarray]]]] = field(
-        default_factory=dict)
+        default_factory=dict
+    )
 
     # Per-teleop-pair: list of (relative_timestamp, target_vector)
     pair_actions: dict[str, list[tuple[float, np.ndarray]]] = field(
-        default_factory=dict)
+        default_factory=dict
+    )
 
     # Ordered action slices for the flattened action vector.
     action_layout: list[dict[str, int | str]] = field(default_factory=list)
@@ -42,10 +47,12 @@ class EpisodeRecorder:
     ``tick()`` → ``stop()``.
     """
 
-    def __init__(self,
-                 cameras: dict[str, ImageSensor],
-                 robots: dict[str, RobotSensor],
-                 fps: int = 30) -> None:
+    def __init__(
+        self,
+        cameras: dict[str, ImageSensor],
+        robots: dict[str, RobotSensor],
+        fps: int = 30,
+    ) -> None:
         self._cameras = cameras
         self._robots = robots
         self._fps = fps
@@ -114,9 +121,9 @@ class EpisodeRecorder:
         self._episode_idx += 1
         return data
 
-    def peek_sensors(self) -> tuple[
-            dict[str, np.ndarray | None],
-            dict[str, dict[str, np.ndarray] | None]]:
+    def peek_sensors(
+        self,
+    ) -> tuple[dict[str, np.ndarray | None], dict[str, dict[str, np.ndarray] | None]]:
         """Read sensors once without recording (for live preview)."""
         frames: dict[str, np.ndarray | None] = {}
         states: dict[str, dict[str, np.ndarray] | None] = {}

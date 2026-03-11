@@ -3,6 +3,7 @@
 This module provides hardware test functions that can be run via
 the `rollio test` command.
 """
+
 from __future__ import annotations
 
 # Registry of available tests with descriptions
@@ -26,21 +27,23 @@ def get_test_description(test_name: str) -> str | None:
 
 def run_test(test_name: str, **kwargs) -> bool:
     """Run a named test.
-    
+
     Args:
         test_name: Name of the test to run
         **kwargs: Arguments to pass to the test function
-        
+
     Returns:
         True if test passed, False otherwise
     """
     if test_name.startswith("airbot_play_"):
         from rollio.tests.airbot_play import run_test as run_airbot_test
+
         return run_airbot_test(test_name, **kwargs)
     if test_name.startswith("airbot_g2_"):
         from rollio.tests.airbot_g2 import run_test as run_airbot_test
+
         return run_airbot_test(test_name, **kwargs)
-    
+
     print(f"Unknown test: {test_name}")
     print(f"Available tests: {', '.join(get_available_tests())}")
     return False

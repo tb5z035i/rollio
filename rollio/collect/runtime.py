@@ -1,4 +1,5 @@
 """Asynchronous collection runtime built on top of existing device interfaces."""
+
 from __future__ import annotations
 
 import multiprocessing as mp
@@ -73,8 +74,8 @@ class TeleopPairBinding:
     leader: RobotArm
     follower: RobotArm
     mapper_mode: MapperMode = "auto"
-    kp: float = 40.0
-    kd: float = 8.0
+    kp: float | np.ndarray | None = None
+    kd: float | np.ndarray | None = None
 
     def mapper(self) -> TeleopMapper:
         return build_mapper(self.mapper_mode)
@@ -106,8 +107,7 @@ class EpisodeAccumulator:
         self._mapper_modes = dict(initial_mapper_modes or {})
         self._action_layout = [dict(entry) for entry in (action_layout or [])]
         self._pair_actions: dict[str, list[tuple[float, np.ndarray]]] = {
-            str(entry["pair_name"]): []
-            for entry in self._action_layout
+            str(entry["pair_name"]): [] for entry in self._action_layout
         }
 
     def append_camera(self, name: str, ts: float, frame: np.ndarray) -> None:
@@ -121,10 +121,7 @@ class EpisodeAccumulator:
         rel_ts = ts - self._started_at
         if rel_ts < 0:
             return
-        safe_state = {
-            key: np.asarray(value).copy()
-            for key, value in state.items()
-        }
+        safe_state = {key: np.asarray(value).copy() for key, value in state.items()}
         with self._lock:
             self._robot_states[name].append((rel_ts, safe_state))
 
@@ -215,12 +212,20 @@ def _export_worker_main(
             episode_index = -1
             try:
                 episode_index, episode = item
-                result_queue.put(("started", episode_index, time.monotonic(), None, None))
+                result_queue.put(
+                    ("started", episode_index, time.monotonic(), None, None)
+                )
                 if config.export_delay_sec:
                     time.sleep(config.export_delay_sec)
                 output_path = writer.write(episode.data)
                 result_queue.put(
-                    ("finished", episode_index, time.monotonic(), str(output_path), None),
+                    (
+                        "finished",
+                        episode_index,
+                        time.monotonic(),
+                        str(output_path),
+                        None,
+                    ),
                 )
             except Exception as exc:  # pragma: no cover - surfaced in tests
                 result_queue.put(
@@ -267,7 +272,9 @@ class AsyncEpisodeExporter:
         self._pending_queue_size = max(1, pending_queue_size)
         self._records: dict[int, ExportRecord] = {}
         self._records_lock = threading.Lock()
-        self._pending_queue: queue.Queue[tuple[int, RecordedEpisode] | None] | None = None
+        self._pending_queue: queue.Queue[tuple[int, RecordedEpisode] | None] | None = (
+            None
+        )
         self._request_queue: object | None = None
         self._result_queue: object | None = None
         self._process: mp.Process | None = None
@@ -315,7 +322,9 @@ class AsyncEpisodeExporter:
         self._pending_queue.put((record.episode_index, episode))
         return record
 
-    def wait_for_episode(self, episode_index: int, timeout: float | None = None) -> bool:
+    def wait_for_episode(
+        self, episode_index: int, timeout: float | None = None
+    ) -> bool:
         with self._records_lock:
             record = self._records.get(episode_index)
         if record is None:
@@ -389,7 +398,9 @@ class AsyncEpisodeExporter:
                 return
             kind, episode_index, timestamp, output_path, error = result
             if kind == "fatal":
-                self._mark_unfinished_records_failed(error or "Export worker failed to start")
+                self._mark_unfinished_records_failed(
+                    error or "Export worker failed to start"
+                )
                 continue
             record = self._record_for_episode(int(episode_index))
             if record is None:
@@ -453,7 +464,9 @@ class AsyncEpisodeExporter:
             record.done_event.set()
 
 
-def _joint_state_to_robot_state(robot: RobotArm, joint_state: JointState) -> dict[str, np.ndarray]:
+def _joint_state_to_robot_state(
+    robot: RobotArm, joint_state: JointState
+) -> dict[str, np.ndarray]:
     robot_state: dict[str, np.ndarray] = {}
     if joint_state.position is not None:
         robot_state["position"] = joint_state.position
@@ -494,9 +507,17 @@ def _joint_state_to_robot_state(robot: RobotArm, joint_state: JointState) -> dic
 
 def _resolve_pair_mode(pair: TeleopPairBinding) -> ResolvedMapperMode:
     if pair.mapper_mode == "joint_direct":
-        return "joint_direct" if supports_joint_direct_runtime(pair.leader, pair.follower) else "noop"
+        return (
+            "joint_direct"
+            if supports_joint_direct_runtime(pair.leader, pair.follower)
+            else "noop"
+        )
     if pair.mapper_mode == "pose_fk_ik":
-        return "pose_fk_ik" if supports_pose_fkik_runtime(pair.leader, pair.follower) else "noop"
+        return (
+            "pose_fk_ik"
+            if supports_pose_fkik_runtime(pair.leader, pair.follower)
+            else "noop"
+        )
     if supports_joint_direct_runtime(pair.leader, pair.follower):
         return "joint_direct"
     if supports_pose_fkik_runtime(pair.leader, pair.follower):
@@ -514,15 +535,17 @@ def _build_action_layout(
         if resolved_mode == "noop":
             continue
         dim = pair.follower.n_dof
-        layout.append({
-            "pair_name": pair.name,
-            "leader": pair.leader_name,
-            "follower": pair.follower_name,
-            "mode": resolved_mode,
-            "start": start,
-            "stop": start + dim,
-            "dim": dim,
-        })
+        layout.append(
+            {
+                "pair_name": pair.name,
+                "leader": pair.leader_name,
+                "follower": pair.follower_name,
+                "mode": resolved_mode,
+                "start": start,
+                "stop": start + dim,
+                "dim": dim,
+            }
+        )
         start += dim
     return layout
 
@@ -597,7 +620,16 @@ class RobotTelemetryTask:
     def step(self) -> None:
         if (
             self._runtime._preview_live_feedback  # noqa: SLF001
+            and self._robot_name in self._runtime._teleop_leader_names  # noqa: SLF001
+        ):
+            # In preview, paired leaders are already sampled by the teleop task.
+            # Re-reading them here only adds scheduler load and leader-side latency.
+            return
+        if (
+            self._runtime._preview_live_feedback  # noqa: SLF001
             and self._robot.control_mode == ControlMode.FREE_DRIVE
+            and self._robot_name
+            not in self._runtime._teleop_leader_names  # noqa: SLF001
         ):
             self._robot.step_free_drive()
         joint_state = self._robot.read_joint_state()
@@ -656,17 +688,32 @@ class TeleopTask:
             self._pair.follower,
             previous_target=self._last_target,
         )
+        if (
+            self._runtime._preview_live_feedback  # noqa: SLF001
+            and command.leader_joint_state is not None
+        ):
+            leader_state = _joint_state_to_robot_state(
+                self._pair.leader,
+                command.leader_joint_state,
+            )
+            self._runtime.update_latest_robot_state(
+                self._pair.leader_name,
+                leader_state,
+            )
         if command.position_target is None or command.velocity_target is None:
             self._runtime.update_pair_mode(self._pair.name, command.mode)
             return
         self._last_target = command.position_target
-        self._pair.follower.step_target_tracking(
-            position_target=command.position_target,
-            velocity_target=command.velocity_target,
-            kp=self._pair.kp,
-            kd=self._pair.kd,
-            add_gravity_compensation=True,
-        )
+        tracking_kwargs = {
+            "position_target": command.position_target,
+            "velocity_target": command.velocity_target,
+            "add_gravity_compensation": True,
+        }
+        if self._pair.kp is not None:
+            tracking_kwargs["kp"] = self._pair.kp
+        if self._pair.kd is not None:
+            tracking_kwargs["kd"] = self._pair.kd
+        self._pair.follower.step_target_tracking(**tracking_kwargs)
         self._runtime.update_pair_mode(self._pair.name, command.mode)
         self._runtime.record_pair_action(
             self._pair.name,
@@ -711,6 +758,7 @@ class AsyncCollectionRuntime:
         self._scheduler_driver_name = scheduler_driver
         self._camera_queue_size = max(1, camera_queue_size)
         self._preview_live_feedback = preview_live_feedback
+        self._teleop_leader_names = {pair.leader_name for pair in teleop_pairs}
         self._state_lock = threading.Lock()
         self._current_episode: EpisodeAccumulator | None = None
         self._pending_episode: RecordedEpisode | None = None
@@ -818,12 +866,8 @@ class AsyncCollectionRuntime:
             robot.open()
             robot.enable()
         self._preview_keepalive_names.clear()
-        paired_robot_names = {
-            pair.leader_name
-            for pair in self._teleop_pairs
-        } | {
-            pair.follower_name
-            for pair in self._teleop_pairs
+        paired_robot_names = {pair.leader_name for pair in self._teleop_pairs} | {
+            pair.follower_name for pair in self._teleop_pairs
         }
         for pair in self._teleop_pairs:
             pair.leader.enter_free_drive()
@@ -928,10 +972,7 @@ class AsyncCollectionRuntime:
                 for name, frame in self._latest_frames.items()
             }
             latest_robot_states = {
-                name: {
-                    key: np.asarray(value).copy()
-                    for key, value in state.items()
-                }
+                name: {key: np.asarray(value).copy() for key, value in state.items()}
                 for name, state in self._latest_robot_states.items()
             }
             self._current_episode = episode
@@ -976,7 +1017,9 @@ class AsyncCollectionRuntime:
     def wait_for_exports(self) -> None:
         self._exporter.join()
 
-    def wait_for_episode_export(self, episode_index: int, timeout: float | None = None) -> bool:
+    def wait_for_episode_export(
+        self, episode_index: int, timeout: float | None = None
+    ) -> bool:
         return self._exporter.wait_for_episode(episode_index, timeout)
 
     def export_records(self) -> dict[int, ExportRecord]:
@@ -986,7 +1029,8 @@ class AsyncCollectionRuntime:
         records = self._exporter.records().values()
         pending = sum(1 for record in records if not record.done_event.is_set())
         completed = sum(
-            1 for record in records
+            1
+            for record in records
             if record.done_event.is_set() and record.error is None
         )
         return pending, completed
@@ -997,7 +1041,9 @@ class AsyncCollectionRuntime:
 
     def latest_robot_states(self) -> dict[str, dict[str, np.ndarray]]:
         with self._state_lock:
-            return {name: dict(state) for name, state in self._latest_robot_states.items()}
+            return {
+                name: dict(state) for name, state in self._latest_robot_states.items()
+            }
 
     def latest_pair_modes(self) -> dict[str, str]:
         with self._state_lock:
@@ -1007,7 +1053,9 @@ class AsyncCollectionRuntime:
         with self._state_lock:
             return [dict(entry) for entry in self._action_layout]
 
-    def scheduler_metrics(self) -> dict[str, DriverMetrics | dict[str, FrameSourceMetrics]]:
+    def scheduler_metrics(
+        self,
+    ) -> dict[str, DriverMetrics | dict[str, FrameSourceMetrics]]:
         driver_metrics = (
             self._scheduler.metrics()
             if self._scheduler is not None
@@ -1026,7 +1074,9 @@ class AsyncCollectionRuntime:
         with self._state_lock:
             self._latest_frames[name] = frame
 
-    def update_latest_robot_state(self, name: str, state: dict[str, np.ndarray]) -> None:
+    def update_latest_robot_state(
+        self, name: str, state: dict[str, np.ndarray]
+    ) -> None:
         with self._state_lock:
             self._latest_robot_states[name] = {
                 key: np.asarray(value).copy() for key, value in state.items()
@@ -1045,7 +1095,9 @@ class AsyncCollectionRuntime:
         if episode is not None:
             episode.append_camera(name, ts, frame)
 
-    def record_robot_state(self, name: str, ts: float, state: dict[str, np.ndarray]) -> None:
+    def record_robot_state(
+        self, name: str, ts: float, state: dict[str, np.ndarray]
+    ) -> None:
         with self._state_lock:
             episode = self._current_episode
         if episode is not None:

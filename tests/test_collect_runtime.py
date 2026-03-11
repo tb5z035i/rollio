@@ -1,4 +1,5 @@
 """End-to-end tests for the asynchronous collection runtime."""
+
 from __future__ import annotations
 
 import json
@@ -7,14 +8,21 @@ import queue
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pyarrow.parquet as pq
 
-from rollio.collect import AsyncCollectionRuntime, build_robots_from_config, register_robot_factory
+from rollio.collect import (
+    AsyncCollectionRuntime,
+    build_robots_from_config,
+    register_robot_factory,
+)
 from rollio.collect.runtime import (
     AsyncEpisodeExporter,
     RecordedEpisode,
+    RobotTelemetryTask,
+    TeleopTask,
     TeleopPairBinding,
     build_teleop_pairs_from_config,
 )
@@ -61,14 +69,17 @@ class LeaderTrajectoryDriver(threading.Thread):
         t0 = time.monotonic()
         while not self._stop_event.is_set():
             t = time.monotonic() - t0
-            q = np.array([
-                0.4 * np.sin(t * 1.1 + self._phase_offset),
-                0.35 * np.cos(t * 0.9 + self._phase_offset),
-                0.25 * np.sin(t * 1.3 + 0.5 + self._phase_offset),
-                0.2 * np.cos(t * 0.7 + 0.3 + self._phase_offset),
-                0.15 * np.sin(t * 1.5 + 0.8 + self._phase_offset),
-                0.1 * np.cos(t * 1.7 + self._phase_offset),
-            ], dtype=np.float64)
+            q = np.array(
+                [
+                    0.4 * np.sin(t * 1.1 + self._phase_offset),
+                    0.35 * np.cos(t * 0.9 + self._phase_offset),
+                    0.25 * np.sin(t * 1.3 + 0.5 + self._phase_offset),
+                    0.2 * np.cos(t * 0.7 + 0.3 + self._phase_offset),
+                    0.15 * np.sin(t * 1.5 + 0.8 + self._phase_offset),
+                    0.1 * np.cos(t * 1.7 + self._phase_offset),
+                ],
+                dtype=np.float64,
+            )
             self._robot.set_joint_position(q)
             if self._stop_event.wait(0.01):
                 return
@@ -168,6 +179,7 @@ class _PreviewSensitiveEEFRobot(RobotArm):
         self._sync_visible = False
         self.hold_commands = 0
         self.free_drive_commands = 0
+        self.read_joint_state_calls = 0
 
     @property
     def n_dof(self) -> int:
@@ -228,6 +240,7 @@ class _PreviewSensitiveEEFRobot(RobotArm):
         self._control_mode = ControlMode.DISABLED
 
     def read_joint_state(self) -> JointState:
+        self.read_joint_state_calls += 1
         self._sensor_position += 0.01
         if self._sync_visible:
             if self._robot_type == "airbot_e2b":
@@ -335,13 +348,19 @@ def _build_runtime(
         fps=10,
         cameras=[
             CameraConfig(name="cam_left", type="pseudo", width=160, height=120, fps=10),
-            CameraConfig(name="cam_right", type="pseudo", width=160, height=120, fps=10),
+            CameraConfig(
+                name="cam_right", type="pseudo", width=160, height=120, fps=10
+            ),
         ],
         robots=[
             RobotConfig(name="leader_a", type="pseudo", role="leader", num_joints=6),
             RobotConfig(name="leader_b", type="pseudo", role="leader", num_joints=6),
-            RobotConfig(name="follower_a", type="pseudo", role="follower", num_joints=6),
-            RobotConfig(name="follower_b", type="pseudo", role="follower", num_joints=6),
+            RobotConfig(
+                name="follower_a", type="pseudo", role="follower", num_joints=6
+            ),
+            RobotConfig(
+                name="follower_b", type="pseudo", role="follower", num_joints=6
+            ),
         ],
         teleop_pairs=[
             TeleopPairConfig(
@@ -377,12 +396,20 @@ def _build_runtime_with_gripper_pair(root: Path) -> AsyncCollectionRuntime:
     cfg = RollioConfig(
         project_name="mixed_entity_collection",
         fps=10,
-        cameras=[CameraConfig(name="cam_main", type="pseudo", width=160, height=120, fps=10)],
+        cameras=[
+            CameraConfig(name="cam_main", type="pseudo", width=160, height=120, fps=10)
+        ],
         robots=[
             RobotConfig(name="leader_arm", type="pseudo", role="leader", num_joints=6),
-            RobotConfig(name="follower_arm", type="pseudo", role="follower", num_joints=6),
-            RobotConfig(name="leader_gripper", type="pseudo", role="leader", num_joints=1),
-            RobotConfig(name="follower_gripper", type="pseudo", role="follower", num_joints=1),
+            RobotConfig(
+                name="follower_arm", type="pseudo", role="follower", num_joints=6
+            ),
+            RobotConfig(
+                name="leader_gripper", type="pseudo", role="leader", num_joints=1
+            ),
+            RobotConfig(
+                name="follower_gripper", type="pseudo", role="follower", num_joints=1
+            ),
         ],
         teleop_pairs=[
             TeleopPairConfig(
@@ -450,8 +477,12 @@ def test_async_runtime_exports_in_background(tmp_path: Path) -> None:
     try:
         runtime.open()
         drivers = [
-            LeaderTrajectoryDriver(runtime._robots["leader_a"], driver_stop, 0.0),  # noqa: SLF001
-            LeaderTrajectoryDriver(runtime._robots["leader_b"], driver_stop, 1.0),  # noqa: SLF001
+            LeaderTrajectoryDriver(
+                runtime._robots["leader_a"], driver_stop, 0.0
+            ),  # noqa: SLF001
+            LeaderTrajectoryDriver(
+                runtime._robots["leader_b"], driver_stop, 1.0
+            ),  # noqa: SLF001
         ]
         for driver in drivers:
             driver.start()
@@ -481,8 +512,12 @@ def test_async_runtime_exports_in_background(tmp_path: Path) -> None:
         dataset_root = tmp_path / "async_simulated_collection"
         assert (dataset_root / "data" / "chunk-000" / "episode_000000.parquet").exists()
         assert (dataset_root / "data" / "chunk-000" / "episode_000001.parquet").exists()
-        assert (dataset_root / "videos" / "chunk-000" / "cam_left" / "episode_000000.mp4").exists()
-        assert (dataset_root / "videos" / "chunk-000" / "cam_right" / "episode_000001.mp4").exists()
+        assert (
+            dataset_root / "videos" / "chunk-000" / "cam_left" / "episode_000000.mp4"
+        ).exists()
+        assert (
+            dataset_root / "videos" / "chunk-000" / "cam_right" / "episode_000001.mp4"
+        ).exists()
 
         info = (dataset_root / "meta" / "info.json").read_text()
         assert '"fps": 10' in info
@@ -493,8 +528,12 @@ def test_async_runtime_exports_in_background(tmp_path: Path) -> None:
         assert episode_1.mapper_modes["direct_pair"] == "joint_direct"
         assert episode_1.mapper_modes["pose_pair"] == "pose_fk_ik"
 
-        ep0_table = pq.read_table(dataset_root / "data" / "chunk-000" / "episode_000000.parquet")
-        ep1_table = pq.read_table(dataset_root / "data" / "chunk-000" / "episode_000001.parquet")
+        ep0_table = pq.read_table(
+            dataset_root / "data" / "chunk-000" / "episode_000000.parquet"
+        )
+        ep1_table = pq.read_table(
+            dataset_root / "data" / "chunk-000" / "episode_000001.parquet"
+        )
         expected_rows_ep0 = int(round(episode_0.duration * 10)) + 1
         expected_rows_ep1 = int(round(episode_1.duration * 10)) + 1
         assert ep0_table.num_rows == expected_rows_ep0
@@ -537,7 +576,9 @@ def test_async_runtime_exports_from_separate_process(tmp_path: Path) -> None:
         runtime.close()
 
 
-def test_async_exporter_submit_returns_before_slow_worker_queue_put(tmp_path: Path) -> None:
+def test_async_exporter_submit_returns_before_slow_worker_queue_put(
+    tmp_path: Path,
+) -> None:
     class _SlowRequestQueue:
         def __init__(self) -> None:
             self.started = threading.Event()
@@ -672,11 +713,115 @@ def test_preview_live_feedback_tracks_g2_from_e2b_pair(tmp_path: Path) -> None:
         assert leader.free_drive_commands > 0
         assert follower.hold_commands > 0
         assert float(leader_state["position"][0]) > 0.0
-        assert abs(
-            float(follower_state["position"][0]) - float(leader_state["position"][0])
-        ) < 0.02
+        assert (
+            abs(
+                float(follower_state["position"][0])
+                - float(leader_state["position"][0])
+            )
+            < 0.02
+        )
     finally:
         runtime.close()
+
+
+def test_joint_direct_mapper_keeps_generic_inputs_for_e2b_to_g2() -> None:
+    leader = _PreviewSensitiveEEFRobot("leader_e2b", "airbot_e2b")
+    follower = _PreviewSensitiveEEFRobot("follower_g2", "airbot_g2")
+    assert leader.open() is None
+    assert leader.enable() is True
+    assert leader.enter_free_drive() is True
+    leader._sensor_position = 0.1  # noqa: SLF001
+    leader.step_free_drive()
+
+    pair = TeleopPairBinding(
+        name="eef_pair",
+        leader_name=leader.info.name,
+        follower_name=follower.info.name,
+        leader=leader,
+        follower=follower,
+        mapper_mode="joint_direct",
+    )
+
+    command = pair.mapper().map_command(pair.leader, pair.follower)
+
+    assert command.mode == "joint_direct"
+    np.testing.assert_allclose(
+        command.position_target, np.array([0.1], dtype=np.float64)
+    )
+    np.testing.assert_allclose(
+        command.velocity_target, np.array([0.01], dtype=np.float64)
+    )
+
+
+def test_teleop_task_preserves_generic_tracking_kwargs_for_e2b_to_g2_pair() -> None:
+    leader = _PreviewSensitiveEEFRobot("leader_e2b", "airbot_e2b")
+    follower = _PreviewSensitiveEEFRobot("follower_g2", "airbot_g2")
+    assert leader.open() is None
+    assert follower.open() is None
+    assert leader.enable() is True
+    assert follower.enable() is True
+    assert leader.enter_free_drive() is True
+    assert follower.enter_target_tracking() is True
+
+    captured: dict[str, object] = {}
+
+    def fake_step_target_tracking(**kwargs) -> None:
+        for key, value in kwargs.items():
+            if isinstance(value, np.ndarray):
+                captured[key] = value.copy()
+            else:
+                captured[key] = value
+
+    follower.step_target_tracking = fake_step_target_tracking  # type: ignore[method-assign]
+
+    runtime = SimpleNamespace(
+        _preview_live_feedback=False,
+        update_pair_mode=lambda *args, **kwargs: None,
+        record_pair_action=lambda *args, **kwargs: None,
+    )
+    pair = TeleopPairBinding(
+        name="eef_pair",
+        leader_name=leader.info.name,
+        follower_name=follower.info.name,
+        leader=leader,
+        follower=follower,
+        mapper_mode="joint_direct",
+    )
+    task = TeleopTask(pair, 40, runtime)
+
+    task.step()
+
+    assert captured["add_gravity_compensation"] is True
+    np.testing.assert_allclose(
+        np.asarray(captured["position_target"], dtype=np.float64),
+        np.array([0.01], dtype=np.float64),
+    )
+    np.testing.assert_allclose(
+        np.asarray(captured["velocity_target"], dtype=np.float64),
+        np.array([0.01], dtype=np.float64),
+    )
+
+
+def test_preview_live_feedback_does_not_duplicate_refresh_for_paired_leader() -> None:
+    leader = _PreviewSensitiveEEFRobot("leader_e2b", "airbot_e2b")
+    assert leader.open() is None
+    assert leader.enable() is True
+    assert leader.enter_free_drive() is True
+
+    fake_runtime = SimpleNamespace(
+        _preview_live_feedback=True,
+        _teleop_leader_names={leader.info.name},
+        update_latest_robot_state=lambda name, state: None,
+        record_robot_state=lambda name, ts, state: None,
+    )
+    task = RobotTelemetryTask(leader.info.name, leader, 40, fake_runtime)
+
+    command_count = leader.free_drive_commands
+    read_count = leader.read_joint_state_calls
+    task.step()
+
+    assert leader.free_drive_commands == command_count
+    assert leader.read_joint_state_calls == read_count
 
 
 def test_scheduler_metrics_are_exposed_for_asyncio_driver(tmp_path: Path) -> None:
@@ -688,7 +833,9 @@ def test_scheduler_metrics_are_exposed_for_asyncio_driver(tmp_path: Path) -> Non
     driver_stop = threading.Event()
     try:
         runtime.open()
-        driver = LeaderTrajectoryDriver(runtime._robots["leader_a"], driver_stop, 0.0)  # noqa: SLF001
+        driver = LeaderTrajectoryDriver(
+            runtime._robots["leader_a"], driver_stop, 0.0
+        )  # noqa: SLF001
         driver.start()
         time.sleep(0.25)
 
@@ -697,6 +844,10 @@ def test_scheduler_metrics_are_exposed_for_asyncio_driver(tmp_path: Path) -> Non
         camera_metrics = metrics["cameras"]
 
         assert driver_metrics.driver_name == "asyncio"
+        assert driver_metrics.loop_run_count > 0
+        assert driver_metrics.last_loop_us > 0.0
+        assert driver_metrics.avg_loop_us > 0.0
+        assert driver_metrics.max_loop_us > 0.0
         assert driver_metrics.task_metrics["teleop-direct_pair"].run_count > 0
         assert driver_metrics.task_metrics["robot-leader_a"].run_count > 0
         assert driver_metrics.task_metrics["camera-cam_left"].run_count > 0
@@ -715,7 +866,9 @@ def test_scheduler_metrics_are_exposed_for_round_robin_driver(tmp_path: Path) ->
     driver_stop = threading.Event()
     try:
         runtime.open()
-        driver = LeaderTrajectoryDriver(runtime._robots["leader_a"], driver_stop, 0.0)  # noqa: SLF001
+        driver = LeaderTrajectoryDriver(
+            runtime._robots["leader_a"], driver_stop, 0.0
+        )  # noqa: SLF001
         driver.start()
         time.sleep(0.25)
 
@@ -724,6 +877,10 @@ def test_scheduler_metrics_are_exposed_for_round_robin_driver(tmp_path: Path) ->
         camera_metrics = metrics["cameras"]
 
         assert driver_metrics.driver_name == "round_robin"
+        assert driver_metrics.loop_run_count > 0
+        assert driver_metrics.last_loop_us > 0.0
+        assert driver_metrics.avg_loop_us > 0.0
+        assert driver_metrics.max_loop_us > 0.0
         assert driver_metrics.task_metrics["teleop-direct_pair"].run_count > 0
         assert driver_metrics.task_metrics["robot-leader_a"].run_count > 0
         assert driver_metrics.task_metrics["camera-cam_left"].run_count > 0
@@ -739,8 +896,12 @@ def test_runtime_exports_per_entity_shapes_and_flat_actions(tmp_path: Path) -> N
     try:
         runtime.open()
         drivers = [
-            LeaderTrajectoryDriver(runtime._robots["leader_arm"], driver_stop, 0.0),  # noqa: SLF001
-            ScalarLeaderDriver(runtime._robots["leader_gripper"], driver_stop),  # noqa: SLF001
+            LeaderTrajectoryDriver(
+                runtime._robots["leader_arm"], driver_stop, 0.0
+            ),  # noqa: SLF001
+            ScalarLeaderDriver(
+                runtime._robots["leader_gripper"], driver_stop
+            ),  # noqa: SLF001
         ]
         for driver in drivers:
             driver.start()
@@ -768,8 +929,12 @@ def test_runtime_exports_per_entity_shapes_and_flat_actions(tmp_path: Path) -> N
         assert features["action"]["shape"] == [7]
         assert info["action_layout"][-1]["stop"] == 7
 
-        table = pq.read_table(dataset_root / "data" / "chunk-000" / "episode_000000.parquet")
-        grip_obs = table.column("observation.state.follower_gripper.position").to_pylist()
+        table = pq.read_table(
+            dataset_root / "data" / "chunk-000" / "episode_000000.parquet"
+        )
+        grip_obs = table.column(
+            "observation.state.follower_gripper.position"
+        ).to_pylist()
         actions = table.column("action").to_pylist()
 
         assert all(len(row) == 1 for row in grip_obs)

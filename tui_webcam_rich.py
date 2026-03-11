@@ -20,6 +20,7 @@ Controls:
     q           quit
     m           cycle render mode  (256 → 16 → gray → 2 → …)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,47 +49,66 @@ for _i in range(256):
     _D3[_i] = list(f"{_i:03d}".encode())
 
 _C256_TMPL = np.frombuffer(
-    b"\x1b[38;5;000;48;5;000m\xe2\x96\x80", dtype=np.uint8).copy()
+    b"\x1b[38;5;000;48;5;000m\xe2\x96\x80", dtype=np.uint8
+).copy()
 _C256_LEN = 23
 
-_16_TMPL = np.frombuffer(
-    b"\x1b[000;000m\xe2\x96\x80", dtype=np.uint8).copy()
+_16_TMPL = np.frombuffer(b"\x1b[000;000m\xe2\x96\x80", dtype=np.uint8).copy()
 _16_LEN = 13
 
 _CUBE_V = np.array([0, 95, 135, 175, 215, 255], dtype=np.int32)
 _CUBE_T = np.array([0, 48, 115, 155, 195, 235], dtype=np.int32)
 
-_ANSI16_RGB = np.array([
-    [  0,   0,   0], [170,   0,   0], [  0, 170,   0], [170, 170,   0],
-    [  0,   0, 170], [170,   0, 170], [  0, 170, 170], [170, 170, 170],
-    [ 85,  85,  85], [255,  85,  85], [ 85, 255,  85], [255, 255,  85],
-    [ 85,  85, 255], [255,  85, 255], [ 85, 255, 255], [255, 255, 255],
-], dtype=np.int32)
+_ANSI16_RGB = np.array(
+    [
+        [0, 0, 0],
+        [170, 0, 0],
+        [0, 170, 0],
+        [170, 170, 0],
+        [0, 0, 170],
+        [170, 0, 170],
+        [0, 170, 170],
+        [170, 170, 170],
+        [85, 85, 85],
+        [255, 85, 85],
+        [85, 255, 85],
+        [255, 255, 85],
+        [85, 85, 255],
+        [255, 85, 255],
+        [85, 255, 255],
+        [255, 255, 255],
+    ],
+    dtype=np.int32,
+)
 
 _FG16 = np.empty((16, 3), dtype=np.uint8)
 for _i, _c in enumerate(
-        [30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97]):
+    [30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97]
+):
     _FG16[_i] = list(f"{_c:03d}".encode())
 
 _BG16 = np.empty((16, 3), dtype=np.uint8)
 for _i, _c in enumerate(
-        [40, 41, 42, 43, 44, 45, 46, 47,
-         100, 101, 102, 103, 104, 105, 106, 107]):
+    [40, 41, 42, 43, 44, 45, 46, 47, 100, 101, 102, 103, 104, 105, 106, 107]
+):
     _BG16[_i] = list(f"{_c:03d}".encode())
 
-_2BIT_CHARS = np.array([
-    [0xe2, 0xa0, 0x80],
-    [0xe2, 0x96, 0x80],
-    [0xe2, 0x96, 0x84],
-    [0xe2, 0x96, 0x88],
-], dtype=np.uint8)
+_2BIT_CHARS = np.array(
+    [
+        [0xE2, 0xA0, 0x80],
+        [0xE2, 0x96, 0x80],
+        [0xE2, 0x96, 0x84],
+        [0xE2, 0x96, 0x88],
+    ],
+    dtype=np.uint8,
+)
 
 _RST_NL = b"\x1b[0m\n"
-_RST    = b"\x1b[0m"
+_RST = b"\x1b[0m"
 
 MODES = ("256", "16", "gray", "2")
 _LABELS = {"256": "256-clr", "16": "16-clr", "gray": "gray", "2": "2-clr"}
-_BPP    = {"256": 23, "16": 13, "gray": 23, "2": 3}
+_BPP = {"256": 23, "16": 13, "gray": 23, "2": 3}
 
 
 def _rgb_to_256(rgb: np.ndarray) -> np.ndarray:
@@ -97,20 +117,19 @@ def _rgb_to_256(rgb: np.ndarray) -> np.ndarray:
     gi = np.clip(np.searchsorted(_CUBE_T, g, side="right") - 1, 0, 5)
     bi = np.clip(np.searchsorted(_CUBE_T, b, side="right") - 1, 0, 5)
     ci = 16 + 36 * ri + 6 * gi + bi
-    cd = ((r - _CUBE_V[ri])**2 + (g - _CUBE_V[gi])**2
-          + (b - _CUBE_V[bi])**2)
+    cd = (r - _CUBE_V[ri]) ** 2 + (g - _CUBE_V[gi]) ** 2 + (b - _CUBE_V[bi]) ** 2
     avg = (r + g + b) // 3
     gri = np.clip((avg - 8 + 5) // 10, 0, 23)
     gv = 8 + gri * 10
-    gd = (r - gv)**2 + (g - gv)**2 + (b - gv)**2
+    gd = (r - gv) ** 2 + (g - gv) ** 2 + (b - gv) ** 2
     return np.where(gd < cd, 232 + gri, ci).astype(np.uint8)
 
 
 def _nearest_16(rgb: np.ndarray) -> np.ndarray:
     flat = rgb.reshape(-1, 3).astype(np.float64)
     ref = _ANSI16_RGB.astype(np.float64)
-    ff = (flat ** 2).sum(axis=1)
-    rr = (ref ** 2).sum(axis=1)
+    ff = (flat**2).sum(axis=1)
+    rr = (ref**2).sum(axis=1)
     dist = ff[:, None] + rr[None, :] - 2.0 * flat @ ref.T
     return dist.argmin(axis=1).astype(np.uint8).reshape(rgb.shape[:2])
 
@@ -125,7 +144,7 @@ def _render(bgr: np.ndarray, w: int, h: int, mode: str) -> bytes:
         top, bot = idx[0::2], idx[1::2]
         n = w * h
         buf = np.tile(_C256_TMPL, n).reshape(n, _C256_LEN)
-        buf[:,  7:10] = _D3[top.ravel()]
+        buf[:, 7:10] = _D3[top.ravel()]
         buf[:, 16:19] = _D3[bot.ravel()]
         rows = buf.reshape(h, w * _C256_LEN)
         return _RST_NL.join(rows[y].tobytes() for y in range(h)) + _RST
@@ -146,7 +165,7 @@ def _render(bgr: np.ndarray, w: int, h: int, mode: str) -> bytes:
         top, bot = idx[0::2], idx[1::2]
         n = w * h
         buf = np.tile(_C256_TMPL, n).reshape(n, _C256_LEN)
-        buf[:,  7:10] = _D3[top.ravel()]
+        buf[:, 7:10] = _D3[top.ravel()]
         buf[:, 16:19] = _D3[bot.ravel()]
         rows = buf.reshape(h, w * _C256_LEN)
         return _RST_NL.join(rows[y].tobytes() for y in range(h)) + _RST
@@ -159,13 +178,13 @@ def _render(bgr: np.ndarray, w: int, h: int, mode: str) -> bytes:
         flat = _2BIT_CHARS[idx.ravel()]
         rows = flat.reshape(h, w * 3)
         prefix = b"\x1b[97;40m"
-        return _RST_NL.join(
-            prefix + rows[y].tobytes() for y in range(h)) + _RST
+        return _RST_NL.join(prefix + rows[y].tobytes() for y in range(h)) + _RST
 
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Background camera grabber
 # ═══════════════════════════════════════════════════════════════════════
+
 
 class CameraGrabber:
     """Reads frames in a background thread so the render loop never blocks."""
@@ -199,6 +218,7 @@ class CameraGrabber:
 #  Rich renderable — wraps pre-rendered ANSI bytes
 # ═══════════════════════════════════════════════════════════════════════
 
+
 class CameraFrame:
     """Rich renderable that displays a half-block ANSI camera frame."""
 
@@ -206,21 +226,21 @@ class CameraFrame:
         self._text = Text("")
         self._width = 1
 
-    def update(self, bgr: np.ndarray, w: int, h: int,
-               mode: str) -> int:
+    def update(self, bgr: np.ndarray, w: int, h: int, mode: str) -> int:
         """Re-render.  Returns the raw byte count (before Rich re-encoding)."""
         raw = _render(bgr, w, h, mode)
-        self._text = Text.from_ansi(
-            raw.decode("utf-8", errors="replace"))
+        self._text = Text.from_ansi(raw.decode("utf-8", errors="replace"))
         self._width = w
         return len(raw)
 
     def __rich_console__(
-            self, console: Console, options: ConsoleOptions) -> RenderResult:
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
         yield self._text
 
     def __rich_measure__(
-            self, console: Console, options: ConsoleOptions) -> Measurement:
+        self, console: Console, options: ConsoleOptions
+    ) -> Measurement:
         return Measurement(self._width, self._width)
 
 
@@ -228,9 +248,10 @@ class CameraFrame:
 #  Aspect-preserving size calculation
 # ═══════════════════════════════════════════════════════════════════════
 
-def _calc_size(cam_w: int, cam_h: int,
-               term_w: int, term_h: int,
-               max_cols: int) -> tuple[int, int]:
+
+def _calc_size(
+    cam_w: int, cam_h: int, term_w: int, term_h: int, max_cols: int
+) -> tuple[int, int]:
     """Return (cols, halfblock_rows) preserving camera aspect ratio."""
     aspect = cam_w / cam_h
     w = min(term_w, max_cols)
@@ -245,15 +266,21 @@ def _calc_size(cam_w: int, cam_h: int,
 #  CLI + main loop
 # ═══════════════════════════════════════════════════════════════════════
 
+
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="TUI Webcam — Rich-based demo")
-    p.add_argument("--device", type=int, default=0,
-                   help="Camera device index (default 0)")
-    p.add_argument("--mode", choices=MODES, default="16",
-                   help="Initial render mode (default 16)")
-    p.add_argument("--max-width", type=int, default=120,
-                   help="Maximum render width in columns (default 120)")
+    p = argparse.ArgumentParser(description="TUI Webcam — Rich-based demo")
+    p.add_argument(
+        "--device", type=int, default=0, help="Camera device index (default 0)"
+    )
+    p.add_argument(
+        "--mode", choices=MODES, default="16", help="Initial render mode (default 16)"
+    )
+    p.add_argument(
+        "--max-width",
+        type=int,
+        default=120,
+        help="Maximum render width in columns (default 120)",
+    )
     return p.parse_args()
 
 
@@ -268,7 +295,7 @@ def main() -> None:
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     grabber = CameraGrabber(cap)
-    while grabber.get() is None:          # wait for first frame
+    while grabber.get() is None:  # wait for first frame
         time.sleep(0.01)
 
     console = Console()
@@ -290,8 +317,7 @@ def main() -> None:
         return None
 
     try:
-        with Live(console=console, screen=True,
-                  auto_refresh=False) as live:
+        with Live(console=console, screen=True, auto_refresh=False) as live:
             while True:
                 t0 = time.monotonic()
 
@@ -312,9 +338,8 @@ def main() -> None:
                 cam_h, cam_w = frame.shape[:2]
                 term_w = console.width
                 term_h = console.height
-                avail_h = max(2, term_h - 2)   # room for status
-                rw, rh = _calc_size(cam_w, cam_h,
-                                    term_w, avail_h, max_w)
+                avail_h = max(2, term_h - 2)  # room for status
+                rw, rh = _calc_size(cam_w, cam_h, term_w, avail_h, max_w)
 
                 # ── Render ─────────────────────────────────────
                 raw_kb = camera.update(frame, rw, rh, mode) / 1024
@@ -332,6 +357,7 @@ def main() -> None:
 
                 # ── Compose ────────────────────────────────────
                 from rich.console import Group
+
                 live.update(Group(camera, status))
                 live.refresh()
 

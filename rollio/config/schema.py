@@ -1,4 +1,5 @@
 """Configuration schema for Rollio — validated with Pydantic."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,7 +16,7 @@ from rollio.episode.codecs import (
 )
 from rollio.robot import robot_class_for_type
 
-AIRBOT_PLAY_TARGET_TRACKING_MODES = {"mit", "pvt"}
+AIRBOT_TARGET_TRACKING_MODES = {"mit", "pvt"}
 
 
 # ─── Sub-models ────────────────────────────────────────────────────────
@@ -34,29 +35,32 @@ def default_direct_map_allowlist(
         return [normalized_type]
     return []
 
+
 class CameraChannelConfig(BaseModel):
     """Configuration for a single camera channel/stream."""
-    name: str = "color"            # "color", "depth", "infrared", etc.
+
+    name: str = "color"  # "color", "depth", "infrared", etc.
     width: int = 640
     height: int = 480
     fps: int = 30
-    pixel_format: str = "rgb24"    # "rgb24", "MJPG", "YUYV", "z16" (depth), etc.
+    pixel_format: str = "rgb24"  # "rgb24", "MJPG", "YUYV", "z16" (depth), etc.
     enabled: bool = True
 
 
 class CameraConfig(BaseModel):
     name: str = "cam0"
     type: str = "pseudo"
-    device: int | str = 0          # device index or path (for realsense: "serial:channel")
-    width: int = 640               # primary channel width (for single-channel compat)
-    height: int = 480              # primary channel height
-    fps: int = 30                  # primary channel fps
-    pixel_format: str = "rgb24"    # primary channel format
-    id_path: str = ""              # udev ID_PATH for stable device identification
-    channel: str = "color"         # for realsense: "color", "depth", or "infrared"
+    device: int | str = 0  # device index or path (for realsense: "serial:channel")
+    width: int = 640  # primary channel width (for single-channel compat)
+    height: int = 480  # primary channel height
+    fps: int = 30  # primary channel fps
+    pixel_format: str = "rgb24"  # primary channel format
+    id_path: str = ""  # udev ID_PATH for stable device identification
+    channel: str = "color"  # for realsense: "color", "depth", or "infrared"
     options: dict[str, Any] = Field(default_factory=dict)  # backend-specific options
     channels: list[CameraChannelConfig] = Field(
-        default_factory=list)      # multi-channel config (empty = single channel mode)
+        default_factory=list
+    )  # multi-channel config (empty = single channel mode)
 
     @field_validator("type", mode="before")
     @classmethod
@@ -72,7 +76,7 @@ class RobotConfig(BaseModel):
     type: str = "pseudo"
     role: Literal["leader", "follower"] = "follower"
     num_joints: int = 6
-    device: str = ""               # CAN bus, serial port, etc.
+    device: str = ""  # CAN bus, serial port, etc.
     direct_map_allowlist: list[str] = Field(default_factory=list)
     options: dict[str, Any] = Field(default_factory=dict)  # backend-specific options
 
@@ -87,13 +91,17 @@ class RobotConfig(BaseModel):
     @model_validator(mode="after")
     def _populate_direct_map_allowlist(self) -> "RobotConfig":
         normalized_options = dict(self.options)
-        if self.type == "airbot_play" and "target_tracking_mode" in normalized_options:
-            tracking_mode = str(normalized_options["target_tracking_mode"]).strip().lower()
-            if tracking_mode not in AIRBOT_PLAY_TARGET_TRACKING_MODES:
-                allowed = ", ".join(sorted(AIRBOT_PLAY_TARGET_TRACKING_MODES))
+        if (
+            self.type in {"airbot_play", "airbot_g2"}
+            and "target_tracking_mode" in normalized_options
+        ):
+            tracking_mode = (
+                str(normalized_options["target_tracking_mode"]).strip().lower()
+            )
+            if tracking_mode not in AIRBOT_TARGET_TRACKING_MODES:
+                allowed = ", ".join(sorted(AIRBOT_TARGET_TRACKING_MODES))
                 raise ValueError(
-                    "AIRBOT Play target_tracking_mode must be one of: "
-                    f"{allowed}"
+                    f"{self.type} target_tracking_mode must be one of: " f"{allowed}"
                 )
             normalized_options["target_tracking_mode"] = tracking_mode
         self.options = normalized_options
@@ -158,12 +166,13 @@ class TeleopPairConfig(BaseModel):
 
 
 class ControlConfig(BaseModel):
-    start_stop: str = " "          # space bar
+    start_stop: str = " "  # space bar
     keep: str = "k"
     discard: str = "d"
 
 
 # ─── Top-level config ─────────────────────────────────────────────────
+
 
 class RollioConfig(BaseModel):
     project_name: str = "default"
@@ -171,10 +180,8 @@ class RollioConfig(BaseModel):
     fps: int = 30
     mode: Literal["teleop", "intervention"] = "teleop"
 
-    cameras: list[CameraConfig] = Field(
-        default_factory=lambda: [CameraConfig()])
-    robots: list[RobotConfig] = Field(
-        default_factory=lambda: [RobotConfig()])
+    cameras: list[CameraConfig] = Field(default_factory=lambda: [CameraConfig()])
+    robots: list[RobotConfig] = Field(default_factory=lambda: [RobotConfig()])
     teleop_pairs: list[TeleopPairConfig] = Field(default_factory=list)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     encoder: EncoderConfig = Field(default_factory=EncoderConfig)
@@ -185,7 +192,8 @@ class RollioConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_explicit_pairs(self) -> "RollioConfig":
         duplicate_camera_names = [
-            name for name, count in Counter(camera.name for camera in self.cameras).items()
+            name
+            for name, count in Counter(camera.name for camera in self.cameras).items()
             if count > 1
         ]
         if duplicate_camera_names:
@@ -195,7 +203,8 @@ class RollioConfig(BaseModel):
             )
 
         duplicate_robot_names = [
-            name for name, count in Counter(robot.name for robot in self.robots).items()
+            name
+            for name, count in Counter(robot.name for robot in self.robots).items()
             if count > 1
         ]
         if duplicate_robot_names:
@@ -221,6 +230,7 @@ class RollioConfig(BaseModel):
 
         if self.teleop_pairs:
             from rollio.config.pairing import validate_teleop_pairs
+
             validate_teleop_pairs(self.robots, self.teleop_pairs)
         return self
 
@@ -229,8 +239,9 @@ class RollioConfig(BaseModel):
     def save(self, path: str | Path) -> None:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(yaml.dump(
-            self.model_dump(), default_flow_style=False, sort_keys=False))
+        p.write_text(
+            yaml.dump(self.model_dump(), default_flow_style=False, sort_keys=False)
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> "RollioConfig":

@@ -31,7 +31,8 @@ robots:
   device: can0
   direct_map_allowlist:
   - airbot_e2b
-  options: {}
+  options:
+    target_tracking_mode: mit
 - name: arm_2
   type: airbot_play
   role: leader

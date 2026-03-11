@@ -1,7 +1,8 @@
 """AIRBOT Play leader/follower MIT-tracking trace experiment.
 
 This hardware script is meant to help diagnose whether the follower-arm MIT
-tracking gains are the root cause of visible trembling during teleoperation.
+tracking gains or follower-G2 MIT tracking are the root cause of visible
+trembling during teleoperation.
 
 Setup:
 - Leader on one CAN interface: AIRBOT Play + E2B
@@ -11,10 +12,11 @@ Runtime behavior:
 - Leader arm runs in Rollio free-drive mode with gravity compensation
 - Leader E2B stays in feedback mode for manual guidance
 - Follower arm runs Rollio MIT target tracking with configurable gains
-- Follower G2 follows the leader E2B with the vendor-style scale/clamp mapping
+- Follower G2 follows the leader E2B with Rollio MIT target tracking
 - The script publishes live JSON telemetry to PlotJuggler over UDP using a
   background publisher thread so socket/JSON work stays off the control path
 """
+
 from __future__ import annotations
 
 import argparse
@@ -53,11 +55,7 @@ def _signal_handler(signum, frame):
 
 
 def _parse_axis_values(raw: str, *, expected: int, name: str) -> np.ndarray:
-    values = [
-        float(chunk.strip())
-        for chunk in str(raw).split(",")
-        if chunk.strip()
-    ]
+    values = [float(chunk.strip()) for chunk in str(raw).split(",") if chunk.strip()]
     if not values:
         raise ValueError(f"{name} must not be empty.")
     if len(values) == 1:
@@ -89,7 +87,9 @@ def _read_position(robot: Any) -> np.ndarray | None:
     return np.asarray(state.position, dtype=np.float64).copy()
 
 
-def _read_position_and_velocity(robot: Any) -> tuple[np.ndarray | None, np.ndarray | None]:
+def _read_position_and_velocity(
+    robot: Any,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     state = robot.read_joint_state()
     if not state.is_valid or state.position is None:
         return None, None
@@ -111,7 +111,9 @@ def _build_plotjuggler_message(sample: TraceSample) -> dict[str, float]:
     }
     arm_error = sample.follower_position[:6] - sample.mapped_target_position[:6]
 
-    for idx, (leader_key, target_key, follower_key, error_key) in enumerate(ARM_STREAM_KEYS):
+    for idx, (leader_key, target_key, follower_key, error_key) in enumerate(
+        ARM_STREAM_KEYS
+    ):
         leader_value = float(sample.leader_position[idx])
         target_value = float(sample.mapped_target_position[idx])
         follower_value = float(sample.follower_position[idx])
@@ -244,9 +246,7 @@ def _run_follow_tick(
         return None
 
     arm_velocity_target = (
-        leader_arm_vel
-        if use_leader_velocity
-        else np.zeros_like(leader_arm_pos)
+        leader_arm_vel if use_leader_velocity else np.zeros_like(leader_arm_pos)
     )
     leader_g2_target = _clamp_g2_target(float(leader_eef_pos[0]) * eef_scale)
 
@@ -263,11 +263,7 @@ def _run_follow_tick(
 
     follower_arm_pos = _read_position(follower_arm)
     follower_g2_pos = _read_position(follower_g2)
-    if (
-        follower_arm_pos is None
-        or follower_g2_pos is None
-        or follower_g2_pos.size == 0
-    ):
+    if follower_arm_pos is None or follower_g2_pos is None or follower_g2_pos.size == 0:
         return None
 
     leader_position = np.concatenate((leader_arm_pos, leader_eef_pos[:1]))
@@ -372,12 +368,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Scale factor from leader E2B opening to follower G2 target (default: 1.5)",
     )
     parser.add_argument(
-        "--g2-velocity",
-        type=float,
-        default=25.0,
-        help="Follower G2 PVT velocity used during follow mode (default: 25.0)",
-    )
-    parser.add_argument(
         "--zero-velocity-target",
         action="store_true",
         help="Use zero velocity targets for the follower arm instead of leader joint velocity",
@@ -433,8 +423,6 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("warmup-sec must be non-negative.")
         if args.eef_scale <= 0.0:
             raise ValueError("eef-scale must be positive.")
-        if args.g2_velocity <= 0.0:
-            raise ValueError("g2-velocity must be positive.")
         if args.publish_hz <= 0.0:
             raise ValueError("publish-hz must be positive.")
         if args.udp_port <= 0:
@@ -452,10 +440,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if not is_can_interface_up(args.leader_can):
-        print(f"Error: leader CAN interface '{args.leader_can}' is not available or not UP.")
+        print(
+            f"Error: leader CAN interface '{args.leader_can}' is not available or not UP."
+        )
         return 1
     if not is_can_interface_up(args.follower_can):
-        print(f"Error: follower CAN interface '{args.follower_can}' is not available or not UP.")
+        print(
+            f"Error: follower CAN interface '{args.follower_can}' is not available or not UP."
+        )
         return 1
 
     verbose = not args.quiet
@@ -486,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Control  : {args.control_hz} Hz")
             print(f"kp       : {_format_vector(arm_kp)}")
             print(f"kd       : {_format_vector(arm_kd)}")
-            print(f"E2B->G2  : scale={args.eef_scale:.3f}, g2_velocity={args.g2_velocity:.3f}")
+            print(f"E2B->G2  : scale={args.eef_scale:.3f}, tracking=mit")
             print(
                 f"UDP      : {publisher.address[0]}:{publisher.address[1]} "
                 f"@ {args.publish_hz:.1f} Hz"
@@ -515,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
         follower_g2 = AIRBOTG2(
             can_interface=args.follower_can,
             control_frequency=args.control_hz,
-            pvt_velocity=args.g2_velocity,
+            target_tracking_mode="mit",
         )
 
         leader_arm.open()
@@ -542,11 +534,13 @@ def main(argv: list[str] | None = None) -> int:
         if not follower_arm.enter_target_tracking():
             raise RuntimeError("Failed to enter follower arm MIT target-tracking mode.")
         if not follower_g2.enter_target_tracking():
-            raise RuntimeError("Failed to enter follower G2 target-tracking mode.")
+            raise RuntimeError("Failed to enter follower G2 MIT target-tracking mode.")
 
         dt = 1.0 / max(args.control_hz, 1)
         if verbose:
-            print("Hold the leader still while the follower settles, then move the leader by hand.")
+            print(
+                "Hold the leader still while the follower settles, then move the leader by hand."
+            )
             print("Press Ctrl+C to stop early.\n")
 
         warmup_deadline = time.monotonic() + args.warmup_sec
@@ -597,8 +591,12 @@ def main(argv: list[str] | None = None) -> int:
                 publisher.publish_latest(sample)
 
             if verbose and (now - last_print >= print_period):
-                arm_error = sample.follower_position[:6] - sample.mapped_target_position[:6]
-                eef_error = sample.follower_position[6] - sample.mapped_target_position[6]
+                arm_error = (
+                    sample.follower_position[:6] - sample.mapped_target_position[:6]
+                )
+                eef_error = (
+                    sample.follower_position[6] - sample.mapped_target_position[6]
+                )
                 print(
                     f"\rt={elapsed:6.2f}s  "
                     f"arm_rms={np.sqrt(np.mean(np.square(arm_error))):7.4f} rad  "
@@ -638,12 +636,17 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"\nError: {exc}")
         import traceback
+
         traceback.print_exc()
         return 1
     finally:
         signal.signal(signal.SIGINT, original_handler)
 
-        if follower_g2 is not None and follower_arm is not None and not args.no_return_zero:
+        if (
+            follower_g2 is not None
+            and follower_arm is not None
+            and not args.no_return_zero
+        ):
             try:
                 follower_g2.move_to_zero(timeout=5.0)
             except Exception:

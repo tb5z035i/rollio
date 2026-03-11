@@ -1,4 +1,5 @@
 """Shared default rates used across Rollio."""
+
 from __future__ import annotations
 
 DEFAULT_CONTROL_HZ = 250

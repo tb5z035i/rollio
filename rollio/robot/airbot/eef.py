@@ -1,4 +1,5 @@
 """Standalone AIRBOT EEF drivers exposed as 1-DOF robots."""
+
 from __future__ import annotations
 
 import time
@@ -8,9 +9,9 @@ import numpy as np
 
 from rollio.defaults import DEFAULT_CONTROL_DT_SEC, DEFAULT_CONTROL_HZ
 from rollio.robot.airbot.control_loop import (
+    AirbotCommandPump,
     AirbotFixedTrackingIntent,
     AirbotFreeDriveIntent,
-    AirbotIoLoop,
     AirbotLoopMetrics,
 )
 from rollio.robot.airbot.shared import (
@@ -139,9 +140,7 @@ class _AIRBOTStandaloneEEFCommon:
         self._control_mode = ControlMode.DISABLED
         self._eef = None
         self._executor = None
-        self._io_loop: AirbotIoLoop | None = None
-        self._latest_free_drive_intent: AirbotFreeDriveIntent | None = None
-        self._latest_tracking_intent: AirbotFixedTrackingIntent | None = None
+        self._command_pump: AirbotCommandPump | None = None
         self._identify_started_at: float | None = None
         self._last_command_type: str | None = None
         self._last_command_args: dict[str, tuple[float, ...]] = {}
@@ -209,8 +208,8 @@ class _AIRBOTStandaloneEEFCommon:
         return self._is_enabled
 
     def control_loop_metrics(self) -> AirbotLoopMetrics:
-        if self._io_loop is not None:
-            return self._io_loop.metrics()
+        if self._command_pump is not None:
+            return self._command_pump.metrics()
         return AirbotLoopMetrics(target_interval_ms=self._dt * 1000.0, run_count=0)
 
     @staticmethod
@@ -263,7 +262,9 @@ class _AIRBOTStandaloneEEFCommon:
             return False
         return self._sdk_mutator_succeeded(result)
 
-    def _assign_vector_field(self, target: Any, field_name: str, values: np.ndarray) -> None:
+    def _assign_vector_field(
+        self, target: Any, field_name: str, values: np.ndarray
+    ) -> None:
         data = [float(v) for v in np.asarray(values, dtype=np.float64).reshape(-1)]
         if field_name not in {
             "pos",
@@ -329,9 +330,11 @@ class _AIRBOTStandaloneEEFCommon:
         self._assign_vector_field(
             command,
             "current_threshold",
-            np.zeros(1, dtype=np.float64)
-            if current_threshold is None
-            else current_threshold,
+            (
+                np.zeros(1, dtype=np.float64)
+                if current_threshold is None
+                else current_threshold
+            ),
         )
         return command
 
@@ -357,8 +360,7 @@ class _AIRBOTStandaloneEEFCommon:
                 for v in np.asarray(velocity_target, dtype=np.float64).reshape(-1)
             ),
             "eff": tuple(
-                float(v)
-                for v in np.asarray(effort, dtype=np.float64).reshape(-1)
+                float(v) for v in np.asarray(effort, dtype=np.float64).reshape(-1)
             ),
             "mit_kp": tuple(
                 float(v) for v in np.asarray(kp, dtype=np.float64).reshape(-1)
@@ -404,7 +406,7 @@ class _AIRBOTStandaloneEEFCommon:
                 )
             self._eef = handle
             self._is_open = True
-            self._start_io_loop()
+            self._start_command_pump()
         except Exception:
             self._executor = None
             raise
@@ -415,34 +417,33 @@ class _AIRBOTStandaloneEEFCommon:
         try:
             if self._is_enabled:
                 self.disable()
-            self._stop_io_loop()
+            self._stop_command_pump()
             if self._eef is not None:
                 self._eef.uninit()
         finally:
             self._eef = None
             self._executor = None
             self._is_open = False
-            self._latest_free_drive_intent = None
-            self._latest_tracking_intent = None
 
     def enable(self) -> bool:
         if not self._is_open or self._eef is None:
             return False
-        if self._io_loop is None:
+        if self._command_pump is None:
+            self._start_command_pump()
+        if self._command_pump is None:
             self._is_enabled = self._apply_enabled_request(True)
             return self._is_enabled
-        self._is_enabled = self._io_loop.request_enabled(True)
+        self._is_enabled = self._command_pump.request_enabled(True)
         return self._is_enabled
 
     def disable(self) -> None:
-        if self._io_loop is not None:
-            self._io_loop.request_enabled(False)
+        if self._command_pump is not None:
+            self._command_pump.request_enabled(False)
+            self._command_pump.reset_command()
         elif self._eef is not None and self._is_enabled:
             self._apply_enabled_request(False)
         self._is_enabled = False
         self._control_mode = ControlMode.DISABLED
-        self._latest_free_drive_intent = None
-        self._latest_tracking_intent = None
 
     def _read_sdk_state(self) -> Any | None:
         if self._eef is None or not self._is_open:
@@ -474,8 +475,6 @@ class _AIRBOTStandaloneEEFCommon:
         )
 
     def read_joint_state(self) -> JointState:
-        if self._io_loop is not None:
-            return self._io_loop.latest_joint_state()
         return self._read_direct_joint_state()
 
     def _apply_enabled_request(self, enabled: bool) -> bool:
@@ -490,50 +489,68 @@ class _AIRBOTStandaloneEEFCommon:
         self._eef.disable()
         return True
 
-    def _start_io_loop(self) -> None:
-        if self._io_loop is not None:
+    def _start_command_pump(self) -> None:
+        if self._command_pump is not None:
             return
-        self._io_loop = AirbotIoLoop(
+        self._command_pump = AirbotCommandPump(
             name=f"rollio-{self.ROBOT_TYPE}-{self._can_interface}",
             period_sec=self._dt,
-            read_joint_state=self._read_direct_joint_state,
             apply_enabled=self._apply_enabled_request,
             apply_mode=self._apply_mode_request,
             cycle=self._control_cycle,
-            initial_joint_state=self._read_direct_joint_state(),
             initial_enabled=self._is_enabled,
             initial_mode=self._control_mode,
         )
-        self._io_loop.start()
+        self._command_pump.start()
 
-    def _stop_io_loop(self) -> None:
-        if self._io_loop is None:
+    def _stop_command_pump(self) -> None:
+        if self._command_pump is None:
             return
-        self._io_loop.stop()
-        self._io_loop = None
+        self._command_pump.stop()
+        self._command_pump = None
 
-    def _publish_free_drive_intent(self, intent: AirbotFreeDriveIntent) -> None:
-        self._latest_free_drive_intent = intent
-        if self._io_loop is not None:
-            self._io_loop.wake()
-
-    def _publish_tracking_intent(self, intent: AirbotFixedTrackingIntent) -> None:
-        self._latest_tracking_intent = intent
-        if self._io_loop is not None:
-            self._io_loop.wake()
+    def _publish_command(
+        self,
+        command: AirbotFreeDriveIntent | AirbotFixedTrackingIntent | None,
+    ) -> bool:
+        if self._command_pump is None:
+            return False
+        return self._command_pump.publish_command(command)
 
     def _apply_mode_request(self, mode: ControlMode) -> bool:
         del mode
         return False
 
-    def _control_cycle(self, joint_state: JointState, mode: ControlMode) -> None:
-        del joint_state, mode
+    def _control_cycle(
+        self,
+        command: AirbotFreeDriveIntent | AirbotFixedTrackingIntent | None,
+        mode: ControlMode,
+        enabled: bool,
+    ) -> None:
+        del command, mode, enabled
+
+
+# Vendor-specific: E2B position readout scale factor (hardcoded per vendor specs)
+_E2B_POSITION_READ_SCALE = 1.5
 
 
 class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
     """AIRBOT E2B exposed as a 1-DOF feedback/keepalive robot."""
 
     ROBOT_TYPE = "airbot_e2b"
+
+    def _read_direct_joint_state(self) -> JointState:
+        state = super()._read_direct_joint_state()
+        if state.is_valid and state.position is not None:
+            state = JointState(
+                timestamp=state.timestamp,
+                position=np.asarray(state.position, dtype=np.float64)
+                * _E2B_POSITION_READ_SCALE,
+                velocity=state.velocity,
+                effort=state.effort,
+                is_valid=state.is_valid,
+            )
+        return state
 
     def __init__(
         self,
@@ -562,7 +579,9 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
         return ("airbot_g2",)
 
     @classmethod
-    def default_preview_control_mode(cls, role: str | None = None) -> ControlMode | None:
+    def default_preview_control_mode(
+        cls, role: str | None = None
+    ) -> ControlMode | None:
         del cls, role
         return ControlMode.FREE_DRIVE
 
@@ -593,15 +612,15 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
         if not self._is_enabled or self._eef is None:
             return False
         ok = (
-            self._io_loop.request_mode(mode)
-            if self._io_loop is not None
+            self._command_pump.request_mode(mode)
+            if self._command_pump is not None
             else self._apply_mode_request(mode)
         )
         if not ok:
             return False
         self._control_mode = mode
         if mode == ControlMode.FREE_DRIVE:
-            self._publish_free_drive_intent(
+            self._publish_command(
                 AirbotFreeDriveIntent(
                     gravity_compensation_scale=1.0,
                     external_wrench=None,
@@ -609,7 +628,7 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
                 ),
             )
         else:
-            self._latest_free_drive_intent = None
+            self._publish_command(None)
         return True
 
     def _send_feedback_keepalive(self) -> None:
@@ -634,7 +653,7 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
         del cmd
         if self._control_mode != ControlMode.FREE_DRIVE or self._eef is None:
             return
-        self._publish_free_drive_intent(
+        self._publish_command(
             AirbotFreeDriveIntent(
                 gravity_compensation_scale=1.0,
                 external_wrench=None,
@@ -645,9 +664,20 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
     def command_target_tracking(self, cmd: TargetTrackingCommand) -> None:
         del cmd
 
-    def _control_cycle(self, joint_state: JointState, mode: ControlMode) -> None:
-        del joint_state
-        if mode == ControlMode.FREE_DRIVE and self._latest_free_drive_intent is not None:
+    def _control_cycle(
+        self,
+        command: AirbotFreeDriveIntent | AirbotFixedTrackingIntent | None,
+        mode: ControlMode,
+        enabled: bool,
+    ) -> None:
+        if (
+            not enabled
+            or mode != ControlMode.FREE_DRIVE
+            or not isinstance(command, AirbotFreeDriveIntent)
+        ):
+            return
+        del command
+        if self._eef is not None:
             self._send_feedback_keepalive()
 
     def move_to_zero(
@@ -689,20 +719,30 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
 
 
 class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
-    """AIRBOT G2 gripper exposed as a 1-DOF PVT robot."""
+    """AIRBOT G2 gripper exposed as a 1-DOF target-tracking robot."""
 
     ROBOT_TYPE = "airbot_g2"
+    TARGET_TRACKING_MODE_MIT = "mit"
+    TARGET_TRACKING_MODE_PVT = "pvt"
+    TARGET_TRACKING_MODE_CHOICES = (
+        TARGET_TRACKING_MODE_MIT,
+        TARGET_TRACKING_MODE_PVT,
+    )
+    DEFAULT_TARGET_TRACKING_MODE = TARGET_TRACKING_MODE_MIT
     DEFAULT_PVT_VELOCITY = 200.0
     PVT_CURRENT_THRESHOLD = 200.0
+    TARGET_TRACKING_MIT_KP = 20.0
+    TARGET_TRACKING_MIT_KD = 1.0
     IDENTIFY_OSCILLATION_MIN = 0.0
     IDENTIFY_OSCILLATION_MAX = 0.07
-    IDENTIFY_OSCILLATION_HZ = 0.5
+    IDENTIFY_OSCILLATION_HZ = 0.25
 
     def __init__(
         self,
         can_interface: str = "can0",
         control_frequency: int = DEFAULT_CONTROL_HZ,
         motor_type: str | None = None,
+        target_tracking_mode: str = DEFAULT_TARGET_TRACKING_MODE,
         pvt_velocity: float = DEFAULT_PVT_VELOCITY,
     ) -> None:
         super().__init__(
@@ -710,8 +750,12 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
             control_frequency=control_frequency,
             motor_type=motor_type,
         )
+        self._target_tracking_mode = self._normalize_target_tracking_mode(
+            target_tracking_mode
+        )
         self._pvt_velocity = max(0.1, float(pvt_velocity))
         self._properties["pvt_velocity"] = self._pvt_velocity
+        self._properties["target_tracking_mode"] = self._target_tracking_mode
 
     @classmethod
     def default_direct_map_allowlist(
@@ -726,7 +770,9 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
         return ("airbot_e2b",)
 
     @classmethod
-    def default_preview_control_mode(cls, role: str | None = None) -> ControlMode | None:
+    def default_preview_control_mode(
+        cls, role: str | None = None
+    ) -> ControlMode | None:
         del cls, role
         return ControlMode.TARGET_TRACKING
 
@@ -734,6 +780,33 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
     def default_preview_keepalive(cls, role: str | None = None) -> bool:
         del cls, role
         return True
+
+    @classmethod
+    def _normalize_target_tracking_mode(cls, mode: str) -> str:
+        normalized = str(mode).strip().lower()
+        if normalized in cls.TARGET_TRACKING_MODE_CHOICES:
+            return normalized
+        choices = ", ".join(cls.TARGET_TRACKING_MODE_CHOICES)
+        raise ValueError(
+            f"Unsupported AIRBOT G2 target_tracking_mode {mode!r}. "
+            f"Expected one of: {choices}."
+        )
+
+    def _target_tracking_uses_pvt(self) -> bool:
+        return self._target_tracking_mode == self.TARGET_TRACKING_MODE_PVT
+
+    def _mit_tracking_gains(self) -> tuple[np.ndarray, np.ndarray]:
+        return (
+            np.array([self.TARGET_TRACKING_MIT_KP], dtype=np.float64),
+            np.array([self.TARGET_TRACKING_MIT_KD], dtype=np.float64),
+        )
+
+    @property
+    def target_tracking_mode(self) -> str:
+        return self._target_tracking_mode
+
+    def _set_mit_mode(self) -> bool:
+        return self._set_param("control_mode", self._ah.MotorControlMode.MIT)
 
     def _set_pvt_mode(self) -> bool:
         return self._set_param("control_mode", self._ah.MotorControlMode.PVT)
@@ -745,21 +818,23 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
             return True
         if mode != ControlMode.TARGET_TRACKING:
             return False
-        return self._set_pvt_mode()
+        if self._target_tracking_uses_pvt():
+            return self._set_pvt_mode()
+        return self._set_mit_mode()
 
     def set_control_mode(self, mode: ControlMode) -> bool:
         if not self._is_enabled or self._eef is None:
             return False
         ok = (
-            self._io_loop.request_mode(mode)
-            if self._io_loop is not None
+            self._command_pump.request_mode(mode)
+            if self._command_pump is not None
             else self._apply_mode_request(mode)
         )
         if not ok:
             return False
         self._control_mode = mode
         if mode == ControlMode.DISABLED:
-            self._latest_tracking_intent = None
+            self._publish_command(None)
         return True
 
     def command_free_drive(self, cmd: FreeDriveCommand) -> None:
@@ -771,54 +846,124 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
         position_target = np.asarray(cmd.position_target, dtype=np.float64).reshape(-1)
         if position_target.size == 0:
             return
-        self._publish_tracking_intent(
+        velocity_target = np.asarray(cmd.velocity_target, dtype=np.float64).reshape(-1)
+        if velocity_target.size == 0:
+            velocity_target = np.zeros(1, dtype=np.float64)
+        feedforward = (
+            np.zeros(1, dtype=np.float64)
+            if cmd.feedforward is None
+            else np.asarray(cmd.feedforward, dtype=np.float64).reshape(-1)
+        )
+        if feedforward.size == 0:
+            feedforward = np.zeros(1, dtype=np.float64)
+        if self._target_tracking_uses_pvt():
+            velocity_target = np.array([self._pvt_velocity], dtype=np.float64)
+            feedforward = np.zeros(1, dtype=np.float64)
+            kp = np.zeros(1, dtype=np.float64)
+            kd = np.zeros(1, dtype=np.float64)
+        else:
+            velocity_target = np.zeros(1, dtype=np.float64)
+            kp, kd = self._mit_tracking_gains()
+        self._publish_command(
             AirbotFixedTrackingIntent(
                 position_target=position_target[:1].copy(),
-                velocity_target=np.array([self._pvt_velocity], dtype=np.float64),
-                feedforward=np.zeros(1, dtype=np.float64),
-                kp=np.zeros(1, dtype=np.float64),
-                kd=np.zeros(1, dtype=np.float64),
+                velocity_target=velocity_target[:1].copy(),
+                feedforward=feedforward[:1].copy(),
+                kp=kp,
+                kd=kd,
                 published_at=time.monotonic(),
             ),
         )
 
-    def _control_cycle(self, joint_state: JointState, mode: ControlMode) -> None:
-        del joint_state
+    def _control_cycle(
+        self,
+        command: AirbotFreeDriveIntent | AirbotFixedTrackingIntent | None,
+        mode: ControlMode,
+        enabled: bool,
+    ) -> None:
         if (
-            mode != ControlMode.TARGET_TRACKING
+            not enabled
+            or mode != ControlMode.TARGET_TRACKING
             or self._eef is None
-            or self._latest_tracking_intent is None
+            or not isinstance(command, AirbotFixedTrackingIntent)
         ):
             return
-        intent = self._latest_tracking_intent
-        position_target = np.asarray(intent.position_target, dtype=np.float64).reshape(-1)
+        intent = command
+        position_target = np.asarray(intent.position_target, dtype=np.float64).reshape(
+            -1
+        )
         if position_target.size == 0:
             return
-        velocity_target = np.asarray(intent.velocity_target, dtype=np.float64).reshape(-1)
+        velocity_target = np.asarray(intent.velocity_target, dtype=np.float64).reshape(
+            -1
+        )
         if velocity_target.size == 0:
-            velocity_target = np.array([self._pvt_velocity], dtype=np.float64)
-        zeros = np.zeros(1, dtype=np.float64)
-        current_threshold = np.array([self.PVT_CURRENT_THRESHOLD], dtype=np.float64)
+            velocity_target = np.zeros(1, dtype=np.float64)
+        effort = (
+            np.zeros(1, dtype=np.float64)
+            if intent.feedforward is None
+            else np.asarray(intent.feedforward, dtype=np.float64).reshape(-1)
+        )
+        if effort.size == 0:
+            effort = np.zeros(1, dtype=np.float64)
+        if self._target_tracking_uses_pvt():
+            zeros = np.zeros(1, dtype=np.float64)
+            current_threshold = np.array([self.PVT_CURRENT_THRESHOLD], dtype=np.float64)
+            payload = self._build_command_payload(
+                position_target[:1],
+                velocity_target[:1],
+                effort=zeros,
+                kp=zeros,
+                kd=zeros,
+                current_threshold=current_threshold,
+            )
+            if payload is None:
+                return
+            self._record_command_debug(
+                "PVT",
+                position_target=position_target[:1],
+                velocity_target=velocity_target[:1],
+                effort=zeros,
+                kp=zeros,
+                kd=zeros,
+                current_threshold=current_threshold,
+            )
+            self._eef.pvt(payload)
+            return
+        velocity_target = np.zeros(1, dtype=np.float64)
+        kp = (
+            np.asarray(intent.kp, dtype=np.float64).reshape(-1)
+            if intent.kp is not None
+            else np.zeros(0, dtype=np.float64)
+        )
+        kd = (
+            np.asarray(intent.kd, dtype=np.float64).reshape(-1)
+            if intent.kd is not None
+            else np.zeros(0, dtype=np.float64)
+        )
+        if kp.size == 0 or kd.size == 0:
+            kp, kd = self._mit_tracking_gains()
+        current_threshold = np.zeros(1, dtype=np.float64)
         payload = self._build_command_payload(
             position_target[:1],
             velocity_target[:1],
-            effort=zeros,
-            kp=zeros,
-            kd=zeros,
+            effort=effort[:1],
+            kp=kp[:1],
+            kd=kd[:1],
             current_threshold=current_threshold,
         )
         if payload is None:
             return
         self._record_command_debug(
-            "PVT",
+            "MIT",
             position_target=position_target[:1],
             velocity_target=velocity_target[:1],
-            effort=zeros,
-            kp=zeros,
-            kd=zeros,
+            effort=effort[:1],
+            kp=kp[:1],
+            kd=kd[:1],
             current_threshold=current_threshold,
         )
-        self._eef.pvt(payload)
+        self._eef.mit(payload)
 
     def move_to_zero(
         self,

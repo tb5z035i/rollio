@@ -1,4 +1,5 @@
 """Shared AIRBOT helpers for discovery and SDK imports."""
+
 from __future__ import annotations
 
 import threading
