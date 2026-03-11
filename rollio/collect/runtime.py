@@ -185,7 +185,7 @@ def _export_worker_main(
     try:
         try:
             os.nice(10)
-        except Exception:
+        except OSError:
             pass
         writer = LeRobotV21Writer(
             root=config.root,
@@ -198,7 +198,7 @@ def _export_worker_main(
             video_codec=config.video_codec,
             depth_codec=config.depth_codec,
         )
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
         result_queue.put(("fatal", -1, time.monotonic(), None, str(exc)))
         result_queue.put(None)
         return
@@ -227,7 +227,7 @@ def _export_worker_main(
                         None,
                     ),
                 )
-            except Exception as exc:  # pragma: no cover - surfaced in tests
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
                 result_queue.put(
                     ("finished", episode_index, time.monotonic(), None, str(exc)),
                 )
@@ -432,7 +432,7 @@ class AsyncEpisodeExporter:
                 if self._process is not None and not self._process.is_alive():
                     raise RuntimeError("Export worker stopped unexpectedly")
                 self._request_queue.put((episode_index, episode))
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
                 record = self._record_for_episode(int(episode_index))
                 if record is not None:
                     finished_at = time.monotonic()
@@ -472,7 +472,7 @@ def _joint_state_to_robot_state(
         robot_state["position"] = joint_state.position
         try:
             pose = robot.kinematics.forward_kinematics(joint_state.position)
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError, AttributeError, KeyError):
             pose = None
         if pose is not None:
             robot_state["ee_position"] = pose.position.astype(np.float32)
@@ -485,7 +485,7 @@ def _joint_state_to_robot_state(
     if callable(control_loop_metrics):
         try:
             metrics = control_loop_metrics()
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError, AttributeError, KeyError):
             metrics = None
         if metrics is not None:
             robot_state["control_loop_target_interval_ms"] = np.array(
@@ -927,7 +927,7 @@ class AsyncCollectionRuntime:
         for name, robot in self._robots.items():
             try:
                 results[name] = bool(robot.move_to_zero(timeout=timeout))
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 results[name] = False
         return results
 

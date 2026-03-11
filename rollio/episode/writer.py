@@ -164,34 +164,36 @@ class LeRobotV21Writer:
         command.extend(codec_option.ffmpeg_args)
         command.append(str(path))
         try:
-            proc = subprocess.Popen(
+            with subprocess.Popen(
                 command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-            )
+            ) as proc:
+                try:
+                    for _, frame in frames:
+                        arr = np.asarray(frame)
+                        if arr.shape[:2] != (h, w):
+                            raise ValueError(
+                                "All frames in one stream must share the same resolution"
+                            )
+                        if proc.stdin is None:
+                            raise RuntimeError("ffmpeg stdin was not created")
+                        proc.stdin.write(arr.tobytes())
+                finally:
+                    if proc.stdin is not None:
+                        proc.stdin.close()
+                stderr = (
+                    proc.stderr.read().decode("utf-8", errors="replace")
+                    if proc.stderr
+                    else ""
+                )
+                return_code = proc.wait()
         except FileNotFoundError as exc:
             if codec_option.kind == "rgb":
                 self._write_video_opencv(path, frames, fps)
                 return
             raise RuntimeError("ffmpeg is required to export depth videos") from exc
-        try:
-            for _, frame in frames:
-                arr = np.asarray(frame)
-                if arr.shape[:2] != (h, w):
-                    raise ValueError(
-                        "All frames in one stream must share the same resolution"
-                    )
-                if proc.stdin is None:
-                    raise RuntimeError("ffmpeg stdin was not created")
-                proc.stdin.write(arr.tobytes())
-        finally:
-            if proc.stdin is not None:
-                proc.stdin.close()
-        stderr = (
-            proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
-        )
-        return_code = proc.wait()
         if return_code != 0:
             if codec_option.kind == "rgb":
                 self._write_video_opencv(path, frames, fps)

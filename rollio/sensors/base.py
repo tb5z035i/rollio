@@ -91,7 +91,7 @@ class ImageSensor(ABC):
         return []
 
     @classmethod
-    def probe_formats(cls, device_id: int | str) -> list[CameraFormat]:
+    def probe_formats(cls, _device_id: int | str) -> list[CameraFormat]:
         """Probe available formats for a device without instantiating.
 
         Subclasses should override for hardware enumeration.
@@ -115,7 +115,7 @@ class ImageSensor(ABC):
     @abstractmethod
     def read(self) -> tuple[float, np.ndarray]:
         """Return (timestamp_sec, bgr_frame)."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def close(self) -> None: ...
@@ -158,7 +158,11 @@ class ImageSensor(ABC):
         )
 
     def apply_config(
-        self, width: int, height: int, fps: int, pixel_format: str
+        self,
+        _width: int,
+        _height: int,
+        _fps: int,
+        _pixel_format: str,
     ) -> bool:
         """Apply new camera configuration.
 
@@ -186,7 +190,7 @@ class RobotSensor(ABC):
     @abstractmethod
     def read(self) -> tuple[float, dict[str, np.ndarray]]:
         """Return (timestamp_sec, {"position": arr, "velocity": arr, ...})."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def close(self) -> None: ...

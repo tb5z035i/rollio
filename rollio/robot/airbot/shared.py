@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import threading
 from typing import Any
 
@@ -9,8 +10,6 @@ from rollio.robot.airbot.can import probe_airbot_device, query_airbot_properties
 from rollio.robot.can_utils import is_can_interface_up, scan_can_interfaces
 from rollio.robot.scanner import DetectedRobot
 
-_ah = None
-_AH_AVAILABLE: bool | None = None
 _AIRBOT_SHARED_RUNTIME_LOCK = threading.Lock()
 _AIRBOT_SHARED_RUNTIMES: dict[int, tuple[Any, Any, Any]] = {}
 
@@ -35,24 +34,14 @@ AIRBOT_ROBOT_TYPE_TO_DEFAULT_MOTOR = {
 }
 
 
-def _import_airbot_hardware():
-    """Lazy import ``airbot_hardware_py``."""
-    global _ah, _AH_AVAILABLE
-    if _AH_AVAILABLE is None:
-        try:
-            import airbot_hardware_py as ah
-
-            _ah = ah
-            _AH_AVAILABLE = True
-        except ImportError:
-            _AH_AVAILABLE = False
-    return _ah, bool(_AH_AVAILABLE)
-
-
 def is_airbot_available() -> bool:
     """Check if ``airbot_hardware_py`` is available."""
-    _, available = _import_airbot_hardware()
-    return available
+    try:
+        import airbot_hardware_py  # pylint: disable=import-outside-toplevel,unused-import
+
+        return True
+    except ImportError:
+        return False
 
 
 def get_shared_airbot_runtime(ah: Any) -> tuple[Any, Any]:

@@ -82,7 +82,7 @@ def probe_airbot_device(interface: str, timeout: float = 1.0) -> bool:
 
             return len(responses) >= 4
 
-    except Exception:
+    except (OSError, RuntimeError, ValueError, TypeError):
         return False
 
 
@@ -95,7 +95,8 @@ def set_airbot_led(interface: str, blink_orange: bool = True) -> bool:
         with CANBus(interface) as bus:
             payload = AIRBOT_LED_BLINK_ORANGE if blink_orange else AIRBOT_LED_NORMAL
             return bus.send(AIRBOT_LED_CONTROL_ID, payload)
-    except Exception:
+
+    except (OSError, RuntimeError, ValueError, TypeError):
         return False
 
 
@@ -138,7 +139,7 @@ def query_airbot_serial(interface: str, timeout: float = 1.0) -> str | None:
             ]
             return "".join(serial_parts).strip("\x00")
 
-    except Exception:
+    except (OSError, RuntimeError, ValueError, TypeError):
         return None
 
 
@@ -174,7 +175,7 @@ def query_airbot_end_effector(interface: str, timeout: float = 1.0) -> dict | No
 
             return None
 
-    except Exception:
+    except (OSError, RuntimeError, ValueError, TypeError):
         return None
 
 
@@ -227,7 +228,7 @@ def query_airbot_gravity_coefficients(
 
             return coefficients if coefficients else None
 
-    except Exception:
+    except (OSError, RuntimeError, ValueError, TypeError):
         return None
 
 

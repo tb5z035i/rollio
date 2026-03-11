@@ -28,11 +28,16 @@ from rollio.robot.base import (
 from rollio.robot.pseudo_robot import PseudoKinematicsModel, PseudoRobotArm
 from rollio.robot.scanner import DetectedRobot, scan_robots
 
+
 # Optional imports for hardware-specific implementations
+def _airbot_available() -> bool:
+    return False
+
+
 try:
     from rollio.robot.airbot.shared import is_airbot_available
 except ImportError:
-    is_airbot_available = lambda: False  # type: ignore
+    is_airbot_available = _airbot_available
 
 try:
     from rollio.robot.airbot.play import AIRBOTPlay
@@ -45,6 +50,11 @@ except ImportError:
     AIRBOTE2B = None  # type: ignore
     AIRBOTG2 = None  # type: ignore
 
+
+def _pinocchio_available() -> bool:
+    return False
+
+
 try:
     from rollio.robot.pinocchio_kinematics import (
         PinocchioKinematicsModel,
@@ -52,7 +62,7 @@ try:
     )
 except ImportError:
     PinocchioKinematicsModel = None  # type: ignore
-    is_pinocchio_available = lambda: False  # type: ignore
+    is_pinocchio_available = _pinocchio_available
 
 # CAN utilities
 from rollio.robot.can_utils import (

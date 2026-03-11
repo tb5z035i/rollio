@@ -319,7 +319,7 @@ class AirbotCommandPump:
                     self._applied_mode,
                     self._applied_enabled,
                 )
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
             next_tick += self._period_sec
@@ -352,7 +352,7 @@ class AirbotCommandPump:
         ok = False
         try:
             ok = self._apply_enabled(request.enabled)
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             ok = False
         if ok:
             self._applied_enabled = request.enabled
@@ -373,7 +373,7 @@ class AirbotCommandPump:
                 ok = self._apply_mode(request.mode) if self._applied_enabled else True
             elif self._applied_enabled:
                 ok = self._apply_mode(request.mode)
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             ok = False
         if ok:
             self._applied_mode = request.mode

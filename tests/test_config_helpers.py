@@ -258,8 +258,9 @@ def test_available_rgb_codecs_keep_nvenc_when_probe_succeeds(
         capture_output: bool,
         text: bool,
         timeout: int,
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, timeout
+        del capture_output, text, timeout, kwargs
         commands.append(command)
         if command == ["ffmpeg", "-hide_banner", "-encoders"]:
             return subprocess.CompletedProcess(

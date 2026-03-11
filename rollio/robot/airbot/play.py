@@ -32,7 +32,6 @@ from rollio.robot.airbot.control_loop import (
     clone_wrench,
 )
 from rollio.robot.airbot.shared import (
-    _import_airbot_hardware,
     get_shared_airbot_runtime,
     is_airbot_available,
     scan_airbot_detected_robots,
@@ -224,12 +223,13 @@ class AIRBOTPlay(RobotArm):
         frame_name: str | None = None,
         target_tracking_mode: str = TARGET_TRACKING_MODE_MIT,
     ) -> None:
-        ah, available = _import_airbot_hardware()
-        if not available:
+        try:
+            import airbot_hardware_py as ah
+        except ImportError as exc:
             raise ImportError(
                 "airbot_hardware_py is required for AIRBOTPlay. "
                 "Install the AIRBOT SDK."
-            )
+            ) from exc
 
         self._ah = ah
         self._can_interface = can_interface
@@ -376,7 +376,7 @@ class AIRBOTPlay(RobotArm):
                     eef_type: np.array(coeffs, dtype=np.float64)
                     for eef_type, coeffs in result.items()
                 }
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
 
         # Fall back to default values if query failed
@@ -395,7 +395,7 @@ class AIRBOTPlay(RobotArm):
             if eef:
                 self._properties["end_effector_type"] = eef["type_name"]
                 self._properties["end_effector_code"] = eef["type_code"]
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
 
     def _get_gravity_coefficients_for_eef(
@@ -453,7 +453,7 @@ class AIRBOTPlay(RobotArm):
             return None
         try:
             return self._arm.state()
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             return None
 
     def _read_direct_joint_state(self) -> JointState:
@@ -484,7 +484,7 @@ class AIRBOTPlay(RobotArm):
         if enabled:
             try:
                 result = self._arm.enable()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 return False
             return self._sdk_mutator_succeeded(result)
         if self._control_mode == ControlMode.FREE_DRIVE:
@@ -905,7 +905,7 @@ class AIRBOTPlay(RobotArm):
                     f"Failed to initialize AIRBOT arm on {self._can_interface}. "
                     "Check CAN connection and motor power."
                 )
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             self._arm = None
             self._executor = None
             raise
@@ -1167,9 +1167,9 @@ class AIRBOTPlay(RobotArm):
     def step_free_drive_with_admittance(
         self,
         external_wrench: Wrench | None = None,
-        mass: float = 5.0,
-        damping: float = 50.0,
-        stiffness: float = 0.0,
+        _mass: float = 5.0,
+        _damping: float = 50.0,
+        _stiffness: float = 0.0,
     ) -> None:
         """Free drive step with admittance control.
 
@@ -1218,7 +1218,7 @@ class AIRBOTPlay(RobotArm):
                 if not self._is_enabled:
                     self.enable()
                 self.enter_free_drive()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass  # LED identification still works even if gravity comp fails
 
         return led_ok
@@ -1263,7 +1263,7 @@ class AIRBOTPlay(RobotArm):
                     if self._is_enabled:
                         self.disable()
                     self.close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
         return led_ok

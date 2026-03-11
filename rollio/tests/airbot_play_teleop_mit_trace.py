@@ -633,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n\nStopped by user.")
         return 130
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
         print(f"\nError: {exc}")
         import traceback
 
@@ -649,17 +649,17 @@ def main(argv: list[str] | None = None) -> int:
         ):
             try:
                 follower_g2.move_to_zero(timeout=5.0)
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
             try:
                 follower_arm.move_to_home(timeout=15.0)
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
         if publisher is not None:
             try:
                 publisher.close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
         for robot in (follower_g2, follower_arm, leader_eef, leader_arm):
@@ -667,11 +667,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             try:
                 robot.disable()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
             try:
                 robot.close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
 

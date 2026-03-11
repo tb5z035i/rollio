@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 def _signal_handler(signum, frame):
     """Handle Ctrl+C gracefully."""
+    del signum, frame
     print("\n\nInterrupted by user. Stopping...")
     sys.exit(130)
 
@@ -43,7 +44,7 @@ def test_gravity_compensation(
     Returns:
         True if test completed successfully
     """
-    from rollio.robot import AIRBOTPlay, ControlMode, is_airbot_available
+    from rollio.robot import AIRBOTPlay, is_airbot_available
     from rollio.robot.can_utils import (
         is_can_interface_up,
         probe_airbot_device,
@@ -173,7 +174,7 @@ def test_gravity_compensation(
             print("\n\nTest stopped by user.")
         return True
 
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, TypeError) as e:
         print(f"\nError during test: {e}")
         return False
 
@@ -203,7 +204,7 @@ def test_gravity_compensation(
 
                 robot.disable()
                 robot.close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
 
@@ -286,7 +287,7 @@ def test_identify(
 
         return True
 
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, TypeError) as e:
         print(f"Error: {e}")
         return False
 
@@ -441,7 +442,7 @@ def test_sine_swing(
             print("\n\nStopped by user.")
         return True
 
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError, TypeError) as e:
         print(f"\nError: {e}")
         import traceback
 
@@ -458,7 +459,7 @@ def test_sine_swing(
                     robot.move_to_home(timeout=15.0)
                 robot.disable()
                 robot.close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
 

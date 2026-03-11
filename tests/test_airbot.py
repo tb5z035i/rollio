@@ -7,6 +7,7 @@ Hardware-dependent tests are marked and can be skipped.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 import time
 from unittest.mock import MagicMock, patch
 
@@ -45,6 +46,24 @@ def _pinocchio_available() -> bool:
     from rollio.robot.pinocchio_kinematics import is_pinocchio_available
 
     return is_pinocchio_available()
+
+
+@pytest.fixture
+def mock_import() -> MagicMock:
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_play_import() -> MagicMock:
+    return MagicMock()
+
+
+@pytest.fixture
+def mock_eef_import() -> MagicMock:
+    return MagicMock()
+
+
+_unused_import_mock = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -223,6 +242,7 @@ class TestAIRBOTPlayMocked:
         mock_executor = MagicMock()
         mock_executor.get_io_context.return_value = MagicMock()
         mock_ah.create_asio_executor.return_value = mock_executor
+        monkeypatch.setitem(sys.modules, "airbot_hardware_py", mock_ah)
         monkeypatch.setattr(
             "rollio.robot.airbot.play.query_airbot_end_effector",
             lambda *args, **kwargs: None,
@@ -239,7 +259,7 @@ class TestAIRBOTPlayMocked:
         return mock_ah, mock_arm
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_creation(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -257,7 +277,7 @@ class TestAIRBOTPlayMocked:
         assert robot.target_tracking_mode == "mit"
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_open_close(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -280,8 +300,6 @@ class TestAIRBOTPlayMocked:
         assert not robot._is_open
         mock_arm.uninit.assert_called_once()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
     def test_airbot_play_and_g2_share_executor(
         self,
@@ -321,7 +339,7 @@ class TestAIRBOTPlayMocked:
         arm.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_enable_disable(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -347,7 +365,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_read_joint_state(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -374,7 +392,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_read_joint_state_reads_latest_sdk_snapshot(
         self,
         mock_import: MagicMock,
@@ -416,7 +434,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_control_modes(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -441,7 +459,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_free_drive_command(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -465,7 +483,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_target_tracking_command(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -505,7 +523,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_target_tracking_step_uses_pvt_when_configured(
         self,
         mock_import: MagicMock,
@@ -553,7 +571,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_target_tracking_command_uses_pvt_when_configured(
         self,
         mock_import: MagicMock,
@@ -597,7 +615,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_target_tracking_replays_at_background_rate(
         self,
         mock_import: MagicMock,
@@ -634,7 +652,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_step_target_tracking_uses_robot_default_gains_when_unspecified(
         self,
         mock_import: MagicMock,
@@ -672,7 +690,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_target_tracking_latest_command_wins(
         self,
         mock_import: MagicMock,
@@ -720,7 +738,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_disable_stops_background_replay(
         self,
         mock_import: MagicMock,
@@ -752,7 +770,7 @@ class TestAIRBOTPlayMocked:
         robot.close()
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_info(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -772,7 +790,7 @@ class TestAIRBOTPlayMocked:
         assert FeedbackCapability.EFFORT in info.feedback_capabilities
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_gravity_scale(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -800,7 +818,7 @@ class TestAIRBOTPlayMocked:
 
     @patch("rollio.robot.airbot.play.set_airbot_led")
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_identify_start_led_only(
         self,
         mock_import: MagicMock,
@@ -825,7 +843,7 @@ class TestAIRBOTPlayMocked:
 
     @patch("rollio.robot.airbot.play.set_airbot_led")
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_identify_start_with_gravity_comp(
         self,
         mock_import: MagicMock,
@@ -859,7 +877,7 @@ class TestAIRBOTPlayMocked:
 
     @patch("rollio.robot.airbot.play.set_airbot_led")
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_identify_stop_led_only(
         self,
         mock_import: MagicMock,
@@ -884,7 +902,7 @@ class TestAIRBOTPlayMocked:
 
     @patch("rollio.robot.airbot.play.set_airbot_led")
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_identify_stop(
         self,
         mock_import: MagicMock,
@@ -913,7 +931,7 @@ class TestAIRBOTPlayMocked:
     @patch("rollio.robot.airbot.play.query_airbot_end_effector")
     @patch("rollio.robot.airbot.play.query_airbot_serial")
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_properties(
         self,
         mock_import: MagicMock,
@@ -949,7 +967,7 @@ class TestAIRBOTPlayMocked:
         assert robot.end_effector_type == "E2B"
 
     @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
-    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_properties_default(
         self, mock_import: MagicMock, mock_can_up: MagicMock, mock_airbot_hardware
     ) -> None:
@@ -1021,10 +1039,11 @@ class TestAIRBOTEEFMocked:
         mock_executor = MagicMock()
         mock_executor.get_io_context.return_value = MagicMock()
         mock_ah.create_asio_executor.return_value = mock_executor
+        monkeypatch.setitem(sys.modules, "airbot_hardware_py", mock_ah)
 
         return mock_ah, mock_eef
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_g2_open_read_and_command(
         self,
         mock_import: MagicMock,
@@ -1065,7 +1084,7 @@ class TestAIRBOTEEFMocked:
         mock_eef.pvt.assert_not_called()
         robot.close()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_g2_target_tracking_uses_pvt_when_configured(
         self,
         mock_import: MagicMock,
@@ -1100,7 +1119,7 @@ class TestAIRBOTEEFMocked:
         mock_eef.mit.assert_not_called()
         robot.close()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_g2_read_joint_state_reads_latest_sdk_snapshot(
         self,
         mock_import: MagicMock,
@@ -1139,7 +1158,7 @@ class TestAIRBOTEEFMocked:
 
         robot.close()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_g2_latest_command_wins(
         self,
         mock_import: MagicMock,
@@ -1181,7 +1200,7 @@ class TestAIRBOTEEFMocked:
 
         robot.close()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_g2_command_payload_uses_attribute_assignment_for_copy_on_read_sdk(
         self,
         mock_import: MagicMock,
@@ -1269,7 +1288,7 @@ class TestAIRBOTEEFMocked:
         assert payload.mit_kd == [0.0]
         assert payload.current_threshold == [10.0]
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_g2_identification_target_has_four_second_period(
         self,
         mock_import: MagicMock,
@@ -1296,7 +1315,7 @@ class TestAIRBOTEEFMocked:
         np.testing.assert_allclose(full, np.array([0.035], dtype=np.float64), atol=1e-9)
 
     @patch("rollio.robot.airbot.eef.set_airbot_led")
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_g2_identification_oscillates_with_fixed_gains(
         self,
         mock_import: MagicMock,
@@ -1334,7 +1353,7 @@ class TestAIRBOTEEFMocked:
         assert "pos=" in command_debug[1]
 
     @patch("rollio.robot.airbot.eef.set_airbot_led")
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_e2b_identification_keeps_feedback_alive(
         self,
         mock_import: MagicMock,
@@ -1360,7 +1379,7 @@ class TestAIRBOTEEFMocked:
         assert param_call[0][1].value == 4
         assert _wait_until(lambda: mock_eef.mit.call_count >= 1)
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_e2b_ignores_false_mode_return_when_sdk_does_not_report_success(
         self,
         mock_import: MagicMock,
@@ -1379,7 +1398,7 @@ class TestAIRBOTEEFMocked:
         assert robot.control_mode == ControlMode.FREE_DRIVE
         robot.close()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_eef_set_control_mode_fails_when_sdk_rejects_change(
         self,
         mock_import: MagicMock,
@@ -1399,7 +1418,7 @@ class TestAIRBOTEEFMocked:
         assert robot.control_mode == ControlMode.DISABLED
         robot.close()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_eef_accepts_void_sdk_mutators(
         self,
         mock_import: MagicMock,
@@ -1422,7 +1441,7 @@ class TestAIRBOTEEFMocked:
 
         robot.close()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_e2b_info_reflects_single_axis_entity(
         self,
         mock_import: MagicMock,
@@ -1441,7 +1460,7 @@ class TestAIRBOTEEFMocked:
         assert robot.properties["end_effector_type"] == "E2B"
         assert robot.properties["eef_motor_type"] == "OD"
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_e2b_rejects_non_od_motor_type(
         self,
         mock_import: MagicMock,
@@ -1457,7 +1476,7 @@ class TestAIRBOTEEFMocked:
         ):
             AIRBOTE2B(can_interface="can0", motor_type="DM")
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_e2b_free_drive_refreshes_current_feedback(
         self,
         mock_import: MagicMock,
@@ -1492,7 +1511,7 @@ class TestAIRBOTEEFMocked:
         assert payload.current_threshold == [0.0]
         mock_eef.ping.assert_not_called()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_e2b_keepalive_replays_at_background_rate(
         self,
         mock_import: MagicMock,
@@ -1521,7 +1540,7 @@ class TestAIRBOTEEFMocked:
 
         robot.close()
 
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_e2b_free_drive_mode_keeps_feedback_alive_without_extra_steps(
         self,
         mock_import: MagicMock,
@@ -1608,7 +1627,7 @@ class TestAIRBOTScanning:
         assert len(devices) == 0
 
     @patch("rollio.robot.airbot.eef.scan_airbot_detected_robots")
-    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("tests.test_airbot._unused_import_mock")
     def test_airbot_g2_scan_filters_to_eef_entities(
         self,
         mock_import: MagicMock,

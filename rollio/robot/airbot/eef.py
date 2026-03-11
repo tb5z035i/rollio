@@ -18,7 +18,6 @@ from rollio.robot.airbot.shared import (
     AIRBOT_ROBOT_TYPE_TO_DEFAULT_MOTOR,
     AIRBOT_ROBOT_TYPE_TO_DETECTED_EEF,
     AIRBOT_ROBOT_TYPE_TO_SDK_EEF,
-    _import_airbot_hardware,
     get_shared_airbot_runtime,
     is_airbot_available,
     normalize_airbot_eef_type,
@@ -111,12 +110,13 @@ class _AIRBOTStandaloneEEFCommon:
         *,
         frame_name: str = "frame",
     ) -> None:
-        ah, available = _import_airbot_hardware()
-        if not available or ah is None:
+        try:
+            import airbot_hardware_py as ah
+        except ImportError as exc:
             raise ImportError(
                 "airbot_hardware_py is required for AIRBOT end-effector support. "
                 "Install the AIRBOT SDK."
-            )
+            ) from exc
 
         self._ah = ah
         self._can_interface = can_interface
@@ -258,7 +258,7 @@ class _AIRBOTStandaloneEEFCommon:
             return False
         try:
             result = self._eef.set_param(param_name, value)
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             return False
         return self._sdk_mutator_succeeded(result)
 
@@ -407,7 +407,7 @@ class _AIRBOTStandaloneEEFCommon:
             self._eef = handle
             self._is_open = True
             self._start_command_pump()
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             self._executor = None
             raise
 
@@ -450,7 +450,7 @@ class _AIRBOTStandaloneEEFCommon:
             return None
         try:
             return self._eef.state()
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             return None
 
     def _read_direct_joint_state(self) -> JointState:
@@ -483,7 +483,7 @@ class _AIRBOTStandaloneEEFCommon:
         if enabled:
             try:
                 result = self._eef.enable()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 return False
             return self._sdk_mutator_succeeded(result)
         self._eef.disable()
@@ -590,12 +590,12 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
         param_value_cls = getattr(self._ah, "ParamValue", None)
         if param_type is None or param_value_cls is None or self._eef is None:
             return False
-        value = param_value_cls(param_type.UINT32_LE, 4)
+        value = param_value_cls(param_type.UINT32_LE, 4)  # pylint: disable=not-callable
         try:
             # Match the vendor E2 example: apply the mode and ignore the SDK
             # return value unless it raises.
             self._eef.set_param("eef.e2.mode", value)
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             return False
         return True
 
@@ -697,7 +697,7 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
             if not self._is_enabled:
                 self.enable()
             self.enter_free_drive()
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
         return led_ok
 
@@ -713,7 +713,7 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
                 if self._is_enabled:
                     self.disable()
                 self.close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
         return led_ok
 
@@ -1002,7 +1002,7 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
                 self.enable()
             if self.enter_target_tracking():
                 self._identify_started_at = time.monotonic()
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
         return led_ok
 
@@ -1030,7 +1030,7 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
                 if self._is_enabled:
                     self.disable()
                 self.close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
         return led_ok
 

@@ -240,12 +240,13 @@ class RollioConfig(BaseModel):
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(
-            yaml.dump(self.model_dump(), default_flow_style=False, sort_keys=False)
+            yaml.dump(self.model_dump(), default_flow_style=False, sort_keys=False),
+            encoding="utf-8",
         )
 
     @classmethod
     def load(cls, path: str | Path) -> "RollioConfig":
-        raw = yaml.safe_load(Path(path).read_text())
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         return cls.model_validate(raw)
 
     @classmethod

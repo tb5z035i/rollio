@@ -114,7 +114,7 @@ class ThreadedCameraFrameSource:
     def _run(self) -> None:
         try:
             self.camera.open()
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
             self._open_error = exc
             self._ready_event.set()
             return
@@ -143,5 +143,5 @@ class ThreadedCameraFrameSource:
         finally:
             try:
                 self.camera.close()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass

@@ -122,5 +122,6 @@ def validate_teleop_pairs(
             )
         if pair.follower not in followers:
             raise ValueError(
-                f"Robot '{pair.follower}' in pair '{pair.name}' is not marked as a follower"
+                f"Robot '{pair.follower}' in pair '{pair.name}' "
+                "is not marked as a follower"
             )

@@ -118,11 +118,11 @@ class _DirectSDKG2Controller:
         if self._eef is not None:
             try:
                 self._eef.disable()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
             try:
                 self._eef.uninit()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
         self._eef = None
         self._executor = None
@@ -181,11 +181,11 @@ class _RollioG2Controller:
             return
         try:
             self._robot.disable()
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
         try:
             self._robot.close()
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
         self._robot = None
 
@@ -639,7 +639,7 @@ def test_sine_position(
         if verbose:
             print("\n\nStopped by user.")
         return True
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
         print(f"\nError: {exc}")
         traceback.print_exc()
         return False
@@ -847,7 +847,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n\nStopped by user.")
         return 130
-    except Exception as exc:
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
         print(f"\nError: {exc}")
         traceback.print_exc()
         return 1

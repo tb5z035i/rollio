@@ -11,35 +11,19 @@ rigid body dynamics library. It supports loading URDF models and computing:
 from __future__ import annotations
 
 from pathlib import Path
-from importlib import resources
 
 import numpy as np
 
-from rollio.robot.base import KinematicsModel, Pose, Wrench
-
-# Lazy import pinocchio to avoid hard dependency
-_pin = None
-_PIN_AVAILABLE = None
-
-
-def _import_pinocchio():
-    """Lazy import pinocchio."""
-    global _pin, _PIN_AVAILABLE
-    if _PIN_AVAILABLE is None:
-        try:
-            import pinocchio as pin
-
-            _pin = pin
-            _PIN_AVAILABLE = True
-        except ImportError:
-            _PIN_AVAILABLE = False
-    return _pin, _PIN_AVAILABLE
+from rollio.robot.base import KinematicsModel, Pose
 
 
 def is_pinocchio_available() -> bool:
     """Check if pinocchio is available."""
-    _, available = _import_pinocchio()
-    return available
+    try:
+        import pinocchio  # pylint: disable=import-outside-toplevel,unused-import
+    except ImportError:
+        return False
+    return True
 
 
 def get_bundled_urdf(name: str) -> Path | None:
@@ -70,7 +54,7 @@ def get_bundled_urdf(name: str) -> Path | None:
             return urdf_path
 
         return None
-    except Exception:
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError):
         return None
 
 
@@ -98,12 +82,13 @@ class PinocchioKinematicsModel(KinematicsModel):
         mesh_dir: str | Path | None = None,
         arm_joints: list[str] | None = None,
     ) -> None:
-        pin, available = _import_pinocchio()
-        if not available:
+        try:
+            import pinocchio as pin
+        except ImportError as exc:
             raise ImportError(
                 "Pinocchio is required for PinocchioKinematicsModel. "
                 "Install with: pip install pin"
-            )
+            ) from exc
 
         self._pin = pin
         self._urdf_path = Path(urdf_path)

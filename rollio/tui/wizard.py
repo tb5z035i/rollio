@@ -16,7 +16,6 @@ import threading
 import time
 import tty
 
-import cv2
 import numpy as np
 
 from rollio.collect import AsyncCollectionRuntime
@@ -27,7 +26,6 @@ from rollio.config.pairing import (
 )
 from rollio.config.schema import (
     CameraConfig,
-    ControlConfig,
     RobotConfig,
     RollioConfig,
     StorageConfig,
@@ -194,7 +192,7 @@ def _make_camera(
             )
             cam.open()
             return cam
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
     elif dev.dtype.startswith("realsense_"):
         # Extract channel and serial from device_id (format: "serial:channel")
@@ -226,7 +224,7 @@ def _make_camera(
             cam = RealSenseCamera(**kwargs)
             cam.open()
             return cam
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
     return None
 
@@ -333,7 +331,7 @@ def _run_with_loading(
     def _worker() -> None:
         try:
             result["value"] = work()
-        except BaseException as exc:  # pragma: no cover - UI helper
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
             result["error"] = exc
         finally:
             done.set()
@@ -465,7 +463,7 @@ def _prompt_line(
 
 
 def _pick_format(
-    term: _Term, out, formats: list[CameraFormat], current_idx: int, W: int, H: int
+    term: _Term, out, formats: list[CameraFormat], current_idx: int, W: int, _H: int
 ) -> int | None:
     """Display format picker.
 
@@ -491,7 +489,7 @@ def _pick_format(
             buf,
             3,
             2,
-            f"Use ↑/↓, or enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel",
+            "Use ↑/↓, or enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel",
         )
         _draw_text(buf, 4, 2, f"Input: \x1b[1;97m{input_buf}\x1b[5m_\x1b[0m")
 
@@ -603,7 +601,7 @@ def _pick_resolution(
             buf,
             3,
             2,
-            f"Use arrows, or enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel",
+            "Use arrows, or enter number and press Enter, or \x1b[33m[Esc]\x1b[0m to cancel",
         )
         _draw_text(buf, 4, 2, f"Input: \x1b[1;97m{input_buf}\x1b[5m_\x1b[0m")
 
@@ -616,7 +614,7 @@ def _pick_resolution(
                 idx = actual_row * cols + col_i
                 if idx >= len(items):
                     break
-                mode_idx_val, display = items[idx]
+                _, display = items[idx]
                 is_cur = idx == current_display_idx
                 x = 2 + col_i * max_item_w
 
@@ -699,7 +697,7 @@ def _pick_option(
 
     input_buf = ""
     while True:
-        W, H = term.cols, term.rows
+        W, _ = term.cols, term.rows
         buf = io.BytesIO()
         buf.write(b"\x1b[2J\x1b[H")
         buf.write(
@@ -1127,12 +1125,12 @@ def _get_airbot_robot(dev: DetectedDevice):
         if dev.dtype == "airbot_g2" and AIRBOTG2 is not None:
             return AIRBOTG2(can_interface=can_interface)
         return None
-    except Exception:
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError):
         return None
 
 
 def _screen_robots(
-    term: _Term, out, devices: list[DetectedDevice], total_steps: int = 5
+    term: _Term, out, devices: list[DetectedDevice], _total_steps: int = 5
 ) -> list[RobotConfig] | None:
     """Robot identification screen — oscillation + name prompt."""
     configs: list[RobotConfig] = []
@@ -1154,7 +1152,7 @@ def _screen_robots(
         if airbot_robot is not None:
             try:
                 airbot_robot.identify_start()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
         while chosen_name is None or phase != "done":
@@ -1228,8 +1226,8 @@ def _screen_robots(
                         n_joints = len(pos)
                     debug_getter = getattr(airbot_robot, "latest_command_debug", None)
                     if callable(debug_getter):
-                        command_debug = debug_getter()
-                except Exception:
+                        command_debug = debug_getter()  # pylint: disable=not-callable
+                except (OSError, RuntimeError, ValueError, TypeError):
                     pass
 
             # Fall back to legacy sensor interface (for pseudo robot)
@@ -1332,7 +1330,7 @@ def _screen_robots(
                     if airbot_robot is not None:
                         try:
                             airbot_robot.identify_stop()
-                        except Exception:
+                        except (OSError, RuntimeError, ValueError, TypeError):
                             pass
                     if rob:
                         rob.close()
@@ -1348,7 +1346,7 @@ def _screen_robots(
                     buf,
                     prompt_row + 1,
                     2,
-                    "\x1b[33m[Enter]\x1b[0m accept  " "\x1b[33m[Esc]\x1b[0m back",
+                    "\x1b[33m[Enter]\x1b[0m accept  \x1b[33m[Esc]\x1b[0m back",
                 )
 
                 out.write(_SY_S + b"\x1b[H\x1b[2J" + buf.getvalue() + _SY_E)
@@ -1370,7 +1368,7 @@ def _screen_robots(
                     buf,
                     prompt_row + 1,
                     2,
-                    "\x1b[33m[Enter]\x1b[0m accept  " "\x1b[33m[Esc]\x1b[0m back",
+                    "\x1b[33m[Enter]\x1b[0m accept  \x1b[33m[Esc]\x1b[0m back",
                 )
 
                 out.write(_SY_S + b"\x1b[H\x1b[2J" + buf.getvalue() + _SY_E)
@@ -1401,7 +1399,7 @@ def _screen_robots(
                     buf,
                     prompt_row + 1,
                     2,
-                    "\x1b[33m[Enter]\x1b[0m accept  " "\x1b[33m[Esc]\x1b[0m back",
+                    "\x1b[33m[Enter]\x1b[0m accept  \x1b[33m[Esc]\x1b[0m back",
                 )
 
                 out.write(_SY_S + b"\x1b[H\x1b[2J" + buf.getvalue() + _SY_E)
@@ -1427,7 +1425,7 @@ def _screen_robots(
         if airbot_robot is not None:
             try:
                 airbot_robot.identify_stop()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
         if rob:
@@ -1460,7 +1458,7 @@ def _screen_settings(
     total_steps: int = 5,
 ) -> tuple[str, str, str, str, str] | None:
     """Project/settings screen — project, storage, mode, and codecs."""
-    W, H = term.cols, term.rows
+    W, _ = term.cols, term.rows
 
     out.write(_SY_S + b"\x1b[2J")
     _draw_header(out, W, step, total_steps, "Project Settings")
@@ -2010,7 +2008,7 @@ def _screen_summary(
                     f"│ \x1b[1;96mCameras ({len(cam_configs)})\x1b[0m "
                     f"\x1b[90m[1-{len(cam_configs)}] select\x1b[0m"
                     if cam_configs
-                    else f"│ \x1b[1;96mCameras (0)\x1b[0m"
+                    else "│ \x1b[1;96mCameras (0)\x1b[0m"
                 ),
                 info_w,
             )
@@ -2113,7 +2111,7 @@ def _screen_summary(
                     row += 1
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
             row += 1
-            _draw_text_clear(buf, row, 2, f"│ \x1b[1mSave to:\x1b[0m", info_w)
+            _draw_text_clear(buf, row, 2, "│ \x1b[1mSave to:\x1b[0m", info_w)
             row += 1
             path_display = output_path[: info_w - 6]
             _draw_text_clear(buf, row, 2, f"│  \x1b[90m{path_display}\x1b[0m", info_w)
@@ -2129,7 +2127,7 @@ def _screen_summary(
             # Calculate space for cameras and robots
             avail_h = max(4, H - 6)
             cam_h_total = max(4, (avail_h * 2) // 3) if n_cams else 0
-            rob_h_total = avail_h - cam_h_total if n_robs else 0
+            _ = avail_h - cam_h_total if n_robs else 0  # rob_h for future robot layout
 
             # Draw camera previews in a grid
             if n_cams > 0:
@@ -2179,13 +2177,13 @@ def _screen_summary(
                             else:
                                 rendered = render_frame(frame, rw, rh, mode)
                             buf.write(blit_frame(rendered, cell_row, cell_col + 1))
-                        except Exception:
+                        except (OSError, RuntimeError, ValueError, TypeError):
                             _draw_text(
-                                buf, cell_row, cell_col + 1, f"\x1b[90m(err)\x1b[0m"
+                                buf, cell_row, cell_col + 1, "\x1b[90m(err)\x1b[0m"
                             )
                     else:
                         _draw_text(
-                            buf, cell_row, cell_col + 1, f"\x1b[90m(no preview)\x1b[0m"
+                            buf, cell_row, cell_col + 1, "\x1b[90m(no preview)\x1b[0m"
                         )
 
                     # Draw camera label below preview
@@ -2259,7 +2257,7 @@ def _screen_summary(
                                 f"ctrl \x1b[36m{interval_text}\x1b[0m "
                                 f"\x1b[33m{bar}\x1b[0m"
                             )
-                        reserved_rows = max(len(state_lines), max(1, rc.num_joints))
+                        reserved_rows = max(len(state_lines), 1, rc.num_joints)
                         for j in range(reserved_rows):
                             line = state_lines[j] if j < len(state_lines) else ""
                             _draw_text_clear(
@@ -2270,7 +2268,7 @@ def _screen_summary(
                                 max(preview_w - 2, 0),
                             )
                         preview_row += 1 + reserved_rows + 1
-                    except Exception:
+                    except (OSError, RuntimeError, ValueError, TypeError):
                         _draw_text_clear(
                             buf,
                             preview_row + 1,
@@ -2470,7 +2468,7 @@ def run_wizard(
             message="Preparing robot setup...",
         )
         # Step 2: Robots
-        rob_configs = _screen_robots(term, out, rob_devs, total_steps=total_steps)
+        rob_configs = _screen_robots(term, out, rob_devs, _total_steps=total_steps)
         if rob_configs is None:
             return None
 

@@ -329,13 +329,13 @@ class KinematicsModel(ABC):
     @abstractmethod
     def n_dof(self) -> int:
         """Number of degrees of freedom."""
-        ...
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def frame_names(self) -> list[str]:
         """Names of all task-space frames exposed by this model."""
-        ...
+        raise NotImplementedError
 
     # ── Forward Kinematics ────────────────────────────────────────────────
 
@@ -350,7 +350,7 @@ class KinematicsModel(ABC):
         Returns:
             Pose of the target frame
         """
-        ...
+        raise NotImplementedError
 
     def forward_kinematics_all(self, q: np.ndarray) -> dict[str, Pose]:
         """Compute poses for all task-space frames.
@@ -386,7 +386,7 @@ class KinematicsModel(ABC):
         Returns:
             (joint_positions, success) - positions may be None if failed
         """
-        ...
+        raise NotImplementedError
 
     # ── Jacobian ──────────────────────────────────────────────────────────
 
@@ -404,7 +404,7 @@ class KinematicsModel(ABC):
         Returns:
             Jacobian matrix (6, n_dof)
         """
-        ...
+        raise NotImplementedError
 
     def jacobian_transpose(self, q: np.ndarray, frame: str | None = None) -> np.ndarray:
         """Compute transpose of Jacobian (for force transformation).
@@ -437,7 +437,7 @@ class KinematicsModel(ABC):
         Returns:
             Joint torques (n_dof,)
         """
-        ...
+        raise NotImplementedError
 
     def gravity_compensation(self, q: np.ndarray) -> np.ndarray:
         """Compute gravity compensation torques.
@@ -547,7 +547,7 @@ class RobotArm(ABC):
         return []
 
     @classmethod
-    def probe(cls, device_id: int | str) -> bool:
+    def probe(cls, _device_id: int | str) -> bool:
         """Check if a specific robot device exists.
 
         Args:
@@ -564,13 +564,13 @@ class RobotArm(ABC):
     @abstractmethod
     def n_dof(self) -> int:
         """Number of degrees of freedom (joints)."""
-        ...
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def info(self) -> RobotInfo:
         """Get robot metadata and capabilities."""
-        ...
+        raise NotImplementedError
 
     @property
     def properties(self) -> dict[str, Any]:
@@ -626,19 +626,19 @@ class RobotArm(ABC):
     @abstractmethod
     def kinematics(self) -> KinematicsModel:
         """Get the kinematics model for this robot."""
-        ...
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def control_mode(self) -> ControlMode:
         """Current control mode."""
-        ...
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def is_enabled(self) -> bool:
         """Whether the robot is enabled and ready for commands."""
-        ...
+        raise NotImplementedError
 
     # ── Feedback Availability ─────────────────────────────────────────────
 
@@ -677,12 +677,12 @@ class RobotArm(ABC):
     @abstractmethod
     def open(self) -> None:
         """Initialize the robot connection."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def close(self) -> None:
         """Close the robot connection and release resources."""
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def enable(self) -> bool:
@@ -691,19 +691,19 @@ class RobotArm(ABC):
         Returns:
             True if successfully enabled
         """
-        ...
+        raise NotImplementedError
 
     @abstractmethod
     def disable(self) -> None:
         """Disable the robot motors (safe state)."""
-        ...
+        raise NotImplementedError
 
     # ── State Reading ─────────────────────────────────────────────────────
 
     @abstractmethod
     def read_joint_state(self) -> JointState:
         """Read current joint state (position, velocity, effort)."""
-        ...
+        raise NotImplementedError
 
     def read_frame_state(self, frame: str | None = None) -> FrameState:
         """Read current task-space frame state.
@@ -765,7 +765,7 @@ class RobotArm(ABC):
         Returns:
             True if mode was successfully set
         """
-        ...
+        raise NotImplementedError
 
     # ── Free Drive Mode ───────────────────────────────────────────────────
 
@@ -780,7 +780,7 @@ class RobotArm(ABC):
         Args:
             cmd: Backend-specific free-drive command
         """
-        ...
+        raise NotImplementedError
 
     def step_free_drive(
         self,
@@ -811,7 +811,7 @@ class RobotArm(ABC):
         Args:
             cmd: Backend-specific target-tracking command
         """
-        ...
+        raise NotImplementedError
 
     def step_target_tracking(
         self,

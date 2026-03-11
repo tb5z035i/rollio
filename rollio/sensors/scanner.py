@@ -95,7 +95,7 @@ def scan_cameras(
         try:
             devices = camera_cls.scan()
             found.extend(devices)
-        except Exception:
+        except (OSError, RuntimeError, ValueError, ImportError):
             pass
 
     if include_simulated:

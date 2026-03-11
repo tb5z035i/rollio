@@ -6,8 +6,6 @@ all the interfaces of a real robot without requiring hardware.
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from rollio.defaults import DEFAULT_CONTROL_HZ
@@ -21,8 +19,6 @@ from rollio.robot.base import (
     RobotArm,
     RobotInfo,
     TargetTrackingCommand,
-    Twist,
-    Wrench,
 )
 from rollio.robot.scanner import DetectedRobot
 from rollio.utils.time import monotonic_sec
@@ -73,6 +69,9 @@ class PseudoKinematicsModel(KinematicsModel):
         """
         del frame
         q = np.asarray(q, dtype=np.float64)
+        # Pad to 6-DOF for formulas when used as gripper (n_dof=1)
+        q_pad = np.zeros(6)
+        q_pad[: min(6, len(q))] = q[:6]
 
         # Simple FK model: accumulate rotations and translations
         # This is a simplified approximation, not accurate DH
@@ -81,13 +80,13 @@ class PseudoKinematicsModel(KinematicsModel):
         x, y, z = 0.0, 0.0, 0.1  # Base height
 
         # Joint 0 rotates around Z (base rotation)
-        c0, s0 = np.cos(q[0]), np.sin(q[0])
+        c0, s0 = np.cos(q_pad[0]), np.sin(q_pad[0])
 
         # Joint 1 rotates around Y (shoulder pitch)
-        c1, s1 = np.cos(q[1]), np.sin(q[1])
+        c1, s1 = np.cos(q_pad[1]), np.sin(q_pad[1])
 
         # Joint 2 rotates around Y (elbow pitch)
-        c2, s2 = np.cos(q[2]), np.sin(q[2])
+        _c2, _s2 = np.cos(q_pad[2]), np.sin(q_pad[2])  # reserve for future IK
 
         # Simplified position calculation
         # Shoulder to elbow
@@ -98,9 +97,17 @@ class PseudoKinematicsModel(KinematicsModel):
         L3 = self.LINK_LENGTHS[5]
 
         # Forward reach in the plane
-        r = L1 * c1 + L2 * np.cos(q[1] + q[2]) + L3 * np.cos(q[1] + q[2] + q[3])
+        r = (
+            L1 * c1
+            + L2 * np.cos(q_pad[1] + q_pad[2])
+            + L3 * np.cos(q_pad[1] + q_pad[2] + q_pad[3])
+        )
         # Height
-        h = L1 * s1 + L2 * np.sin(q[1] + q[2]) + L3 * np.sin(q[1] + q[2] + q[3])
+        h = (
+            L1 * s1
+            + L2 * np.sin(q_pad[1] + q_pad[2])
+            + L3 * np.sin(q_pad[1] + q_pad[2] + q_pad[3])
+        )
 
         # Apply base rotation
         x = r * c0
@@ -111,7 +118,7 @@ class PseudoKinematicsModel(KinematicsModel):
 
         # Simplified orientation (accumulated rotations)
         # For simplicity, use axis-angle -> quaternion
-        angle = q[0] + q[4]  # Simplified roll
+        angle = q_pad[0] + q_pad[4]  # Simplified roll
         axis = np.array([0.0, 0.0, 1.0])
 
         # Convert axis-angle to quaternion
@@ -214,31 +221,37 @@ class PseudoKinematicsModel(KinematicsModel):
         qdd = np.asarray(qdd, dtype=np.float64)
 
         tau = np.zeros(self._n_dof)
+        # Pad q for formulas when n_dof < 6 (e.g. gripper)
+        q_pad = np.zeros(6)
+        q_pad[: min(6, len(q))] = q[:6]
 
         # Simplified gravity compensation model
         # Joints 1 and 2 (shoulder and elbow pitch) bear most gravity load
 
         g = 9.81
 
-        # Joint 1: shoulder pitch - affected by links 1, 2, and EE
-        m_total = self.LINK_MASSES[1:].sum()
-        L_eff = (self.LINK_LENGTHS[1] + self.LINK_LENGTHS[2]) / 2
-        tau[1] = m_total * g * L_eff * np.cos(q[1])
+        if self._n_dof >= 2:
+            # Joint 1: shoulder pitch - affected by links 1, 2, and EE
+            m_total = self.LINK_MASSES[1:].sum()
+            L_eff = (self.LINK_LENGTHS[1] + self.LINK_LENGTHS[2]) / 2
+            tau[1] = m_total * g * L_eff * np.cos(q_pad[1])
 
-        # Joint 2: elbow pitch - affected by links 2 and EE
-        m_distal = self.LINK_MASSES[2:].sum()
-        L_eff2 = self.LINK_LENGTHS[2] / 2
-        tau[2] = m_distal * g * L_eff2 * np.cos(q[1] + q[2])
+        if self._n_dof >= 3:
+            # Joint 2: elbow pitch - affected by links 2 and EE
+            m_distal = self.LINK_MASSES[2:].sum()
+            L_eff2 = self.LINK_LENGTHS[2] / 2
+            tau[2] = m_distal * g * L_eff2 * np.cos(q_pad[1] + q_pad[2])
 
-        # Joint 3: wrist pitch
-        m_wrist = self.LINK_MASSES[3:].sum()
-        tau[3] = m_wrist * g * 0.05 * np.cos(q[1] + q[2] + q[3])
+        if self._n_dof >= 4:
+            # Joint 3: wrist pitch
+            m_wrist = self.LINK_MASSES[3:].sum()
+            tau[3] = m_wrist * g * 0.05 * np.cos(q_pad[1] + q_pad[2] + q_pad[3])
 
         # Add inertia effects if accelerations are non-zero
         if np.any(qdd != 0):
             # Simplified inertia (diagonal approximation)
             inertias = np.array([0.1, 0.5, 0.3, 0.05, 0.02, 0.01])
-            tau += inertias * qdd
+            tau += inertias[: self._n_dof] * qdd
 
         # Add velocity-dependent friction
         if np.any(qd != 0):
@@ -282,7 +295,7 @@ class PseudoRobotArm(RobotArm):
         ]
 
     @classmethod
-    def probe(cls, device_id: int | str) -> bool:
+    def probe(cls, _: int | str) -> bool:
         """Pseudo robot is always available."""
         return True
 

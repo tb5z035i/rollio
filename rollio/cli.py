@@ -100,8 +100,8 @@ def _cmd_setup(args: argparse.Namespace) -> None:
     print(f"  Project:  {cfg.project_name}")
     print(f"  Cameras:  {[c.name for c in cfg.cameras]}")
     print(f"  Robots:   {[r.name for r in cfg.robots]}")
-    print(f"  Storage:  {cfg.storage.root}")
-    print(f"\nNext step:")
+    print(f"  Storage:  {cfg.storage.root}")  # pylint: disable=no-member
+    print("\nNext step:")
     print(f"  rollio collect --config {out_path}")
 
 
@@ -116,7 +116,7 @@ def _cmd_collect(args: argparse.Namespace) -> None:
         print(f"Loaded config from {cfg_path}")
     else:
         print(f"Config not found at {cfg_path}.")
-        print(f"Run 'rollio setup' first, or specify --config path.")
+        print("Run 'rollio setup' first, or specify --config path.")
         sys.exit(1)
 
     print(f"Project: {cfg.project_name}")
@@ -195,7 +195,6 @@ class TestNameCompleter:
 
 def _cmd_completion(args: argparse.Namespace) -> None:
     """Install or print shell completion."""
-    import os
     import subprocess
 
     shell = args.shell
@@ -240,13 +239,14 @@ bashcompinit
                 ["register-python-argcomplete", "--shell", "fish", "rollio"],
                 capture_output=True,
                 text=True,
+                check=False,
             )
             script = result.stdout
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             print("Error: Could not generate fish completion script.")
             sys.exit(1)
     else:
-        print(f"Unsupported shell: {shell}")
+        print("Unsupported shell:", shell)
         print("Supported shells: bash, zsh, fish")
         sys.exit(1)
 
@@ -261,33 +261,33 @@ bashcompinit
         if rc_file.exists():
             content = rc_file.read_text()
             if "register-python-argcomplete rollio" in content:
-                print(f"Completion already installed in {rc_file}")
+                print("Completion already installed in", rc_file)
                 return
 
         # For fish, create the completions directory if needed
         if shell == "fish":
             rc_file.parent.mkdir(parents=True, exist_ok=True)
             rc_file.write_text(script)
-            print(f"Fish completion installed to {rc_file}")
+            print("Fish completion installed to", rc_file)
         else:
             # Append to rc file
-            with open(rc_file, "a") as f:
+            with open(rc_file, "a", encoding="utf-8") as f:
                 f.write(f"\n# Rollio shell completion\n{script}\n")
-            print(f"Completion installed to {rc_file}")
+            print("Completion installed to", rc_file)
 
-        print(f"\nRestart your shell or run:")
+        print("\nRestart your shell or run:")
         print(f"  source {rc_file}")
         return
 
     # Default: print instructions
-    print(f"Shell completion for {shell}")
+    print("Shell completion for", shell)
     print("=" * 40)
     print()
     print("Option 1: Install automatically")
-    print(f"  rollio completion --install")
+    print("  rollio completion --install")
     print()
     print("Option 2: Add manually to your shell config")
-    print(f"  Add the following to {rc_file}:")
+    print("  Add the following to", rc_file + ":")
     print()
     for line in script.split("\n"):
         print(f"    {line}")

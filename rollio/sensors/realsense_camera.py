@@ -19,19 +19,6 @@ from rollio.utils.time import monotonic_sec
 if TYPE_CHECKING:
     from rollio.sensors.scanner import DetectedDevice
 
-# Lazy import pyrealsense2 to avoid import errors when not installed
-rs = None
-
-
-def _ensure_rs():
-    """Lazy import pyrealsense2."""
-    global rs
-    if rs is None:
-        import pyrealsense2 as _rs
-
-        rs = _rs
-    return rs
-
 
 class RealSenseCamera(ImageSensor):
     """Intel RealSense camera with multi-channel support (color, depth, infrared).
@@ -57,7 +44,8 @@ class RealSenseCamera(ImageSensor):
 
         found: list[DetectedDevice] = []
         try:
-            rs = _ensure_rs()
+            import pyrealsense2 as rs  # pylint: disable=import-outside-toplevel
+
             ctx = rs.context()
             for dev in ctx.query_devices():
                 sn = dev.get_info(rs.camera_info.serial_number)
@@ -150,7 +138,7 @@ class RealSenseCamera(ImageSensor):
                             pixel_format=pf,
                         )
                     )
-        except Exception:
+        except (OSError, RuntimeError, ValueError, ImportError):
             pass
         return found
 
@@ -179,7 +167,8 @@ class RealSenseCamera(ImageSensor):
         """
         formats: list[CameraFormat] = []
         try:
-            rs = _ensure_rs()
+            import pyrealsense2 as rs  # pylint: disable=import-outside-toplevel
+
             ctx = rs.context()
             for dev in ctx.query_devices():
                 sn = dev.get_info(rs.camera_info.serial_number)
@@ -229,7 +218,7 @@ class RealSenseCamera(ImageSensor):
                             CameraFormat(fourcc=fmt_name, description=desc, modes=modes)
                         )
                 break
-        except Exception:
+        except (OSError, RuntimeError, ValueError, ImportError):
             pass
         return formats
 
@@ -314,7 +303,7 @@ class RealSenseCamera(ImageSensor):
 
     def open(self) -> None:
         """Start the RealSense pipeline."""
-        rs = _ensure_rs()
+        import pyrealsense2 as rs  # pylint: disable=import-outside-toplevel
 
         self._pipeline = rs.pipeline()
         self._config = rs.config()
@@ -385,7 +374,6 @@ class RealSenseCamera(ImageSensor):
             return ts, self._empty_frame()
 
         try:
-            rs = _ensure_rs()
             frames = self._pipeline.wait_for_frames(timeout_ms=1000)
 
             # Align depth to color if both enabled
@@ -411,7 +399,7 @@ class RealSenseCamera(ImageSensor):
             # Return the selected preview channel
             return ts, self._get_preview_frame()
 
-        except Exception:
+        except (OSError, RuntimeError, ValueError, ImportError):
             return ts, self._empty_frame()
 
     def _empty_frame(self) -> np.ndarray:
@@ -419,12 +407,11 @@ class RealSenseCamera(ImageSensor):
         ch = self._preview_channel
         if ch == "depth":
             return np.zeros((self._depth_height, self._depth_width), np.uint16)
-        elif ch == "infrared":
+        if ch == "infrared":
             # Use uint16 for y16 format, uint8 for y8
             dtype = np.uint16 if self._ir_format == "y16" else np.uint8
             return np.zeros((self._ir_height, self._ir_width), dtype)
-        else:
-            return np.zeros((self._height, self._width, 3), np.uint8)
+        return np.zeros((self._height, self._width, 3), np.uint8)
 
     def _get_preview_frame(self) -> np.ndarray:
         """Get the frame for the current preview channel."""
@@ -452,9 +439,9 @@ class RealSenseCamera(ImageSensor):
         """Get (width, height, fps) for a specific channel."""
         if channel == "color":
             return self._width, self._height, self._fps
-        elif channel == "depth":
+        if channel == "depth":
             return self._depth_width, self._depth_height, self._depth_fps
-        elif channel == "infrared":
+        if channel == "infrared":
             return self._ir_width, self._ir_height, self._ir_fps
         return 0, 0, 0
 
@@ -462,9 +449,9 @@ class RealSenseCamera(ImageSensor):
         """Check if a channel is enabled."""
         if channel == "color":
             return self._enable_color
-        elif channel == "depth":
+        if channel == "depth":
             return self._enable_depth
-        elif channel == "infrared":
+        if channel == "infrared":
             return self._enable_infrared
         return False
 
@@ -539,7 +526,7 @@ class RealSenseCamera(ImageSensor):
         )
 
     def apply_config(
-        self, width: int, height: int, fps: int, pixel_format: str
+        self, width: int, height: int, fps: int, _pixel_format: str
     ) -> bool:
         """Apply new configuration. Requires reopening the pipeline."""
         was_open = self._pipeline is not None

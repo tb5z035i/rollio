@@ -148,6 +148,7 @@ def _probe_ffmpeg_encoder(codec: CodecOption) -> bool:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return False
@@ -163,6 +164,7 @@ def discover_ffmpeg_encoders() -> set[str]:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return set()

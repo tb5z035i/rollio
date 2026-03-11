@@ -143,7 +143,7 @@ class PoseSpaceFkIkMapper(TeleopMapper):
                 leader_frame.pose,
                 q_init=np.asarray(previous_target, dtype=np.float64),
             )
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             return TeleopCommand.noop()
         if not success or q_target is None:
             if (

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -90,7 +88,7 @@ class EpisodeRecorder:
         if not self._recording:
             return {}
 
-        t_base = self._clock._start
+        t_base = self._clock.start_time
         latest_frames: dict[str, np.ndarray | None] = {}
 
         for name, cam in self._cameras.items():

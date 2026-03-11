@@ -42,7 +42,7 @@ def scan_robots() -> list[DetectedRobot]:
         try:
             devices = robot_cls.scan()
             found.extend(devices)
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             pass
 
     try:

@@ -6,31 +6,18 @@ interface inspection, and raw CAN communication.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
-
-# Lazy import python-can
-_can = None
-_CAN_AVAILABLE = None
-
-
-def _import_can():
-    """Lazy import python-can."""
-    global _can, _CAN_AVAILABLE
-    if _CAN_AVAILABLE is None:
-        try:
-            import can
-
-            _can = can
-            _CAN_AVAILABLE = True
-        except ImportError:
-            _CAN_AVAILABLE = False
-    return _can, _CAN_AVAILABLE
 
 
 def is_python_can_available() -> bool:
     """Check if python-can is available."""
-    _, available = _import_can()
-    return available
+    try:
+        import can  # pylint: disable=import-outside-toplevel,unused-import
+
+        return True
+    except ImportError:
+        return False
 
 
 def scan_can_interfaces() -> list[str]:
@@ -80,7 +67,7 @@ def is_can_interface_up(interface: str) -> bool:
         return False
 
     try:
-        flags_hex = flags_path.read_text().strip()
+        flags_hex = flags_path.read_text(encoding="utf-8").strip()
         flags = int(flags_hex, 16)
         # IFF_UP = 0x1
         return bool(flags & 0x1)
@@ -143,12 +130,13 @@ class CANBus:
             bustype: CAN bus type (default: "socketcan")
             bitrate: Bitrate (only used if interface needs to be configured)
         """
-        can, available = _import_can()
-        if not available:
+        try:
+            import can
+        except ImportError as exc:
             raise ImportError(
                 "python-can is required for CAN communication. "
                 "Install with: pip install python-can"
-            )
+            ) from exc
 
         self._can = can
         self._interface = interface

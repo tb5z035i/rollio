@@ -72,7 +72,7 @@ class PseudoCamera(ImageSensor):
         ]
 
     @classmethod
-    def probe_formats(cls, device_id: int | str) -> list[CameraFormat]:
+    def probe_formats(cls, _device_id: int | str) -> list[CameraFormat]:
         """Return pseudo formats (any resolution is supported)."""
         return [
             CameraFormat(

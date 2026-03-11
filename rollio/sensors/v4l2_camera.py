@@ -36,10 +36,11 @@ def _parse_v4l2_formats(device: str | int) -> list[CameraFormat]:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode != 0:
             return []
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return []
 
     formats: list[CameraFormat] = []
@@ -115,7 +116,7 @@ def probe_v4l2_formats(device: str | int) -> list[CameraFormat]:
                         modes=[CameraMode(w, h, fps)],
                     )
                 ]
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError, RuntimeError):
             pass
     return formats
 
@@ -129,13 +130,14 @@ def _get_udev_properties(device: str) -> dict[str, str]:
             capture_output=True,
             text=True,
             timeout=2,
+            check=False,
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
                 if "=" in line:
                     key, value = line.split("=", 1)
                     props[key] = value
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
     return props
 
@@ -252,7 +254,7 @@ class V4L2Camera(ImageSensor):
                     )
                 else:
                     cap.release()
-            except Exception:
+            except (OSError, ValueError, RuntimeError):
                 pass
         return found
 

@@ -48,6 +48,8 @@ extend-exclude = "external"
 py-version = "3.11"
 jobs = 0
 ignore-paths = ["^external/", "^build/", "^dist/"]
+extension-pkg-allow-list = ["airbot_hardware_py"]
+ignored-modules = ["cv2", "pyrealsense2", "pinocchio"]
 
 [tool.pylint.format]
 max-line-length = 88

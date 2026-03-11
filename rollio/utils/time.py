@@ -41,3 +41,8 @@ class EpisodeClock:
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def start_time(self) -> float:
+        """Start timestamp in monotonic seconds."""
+        return self._start

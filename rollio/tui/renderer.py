@@ -599,10 +599,9 @@ def render_depth(
         ).astype(np.uint8)
         rgb = _TURBO_RED_BLUE[cmap_idx]
         return _build_true(rgb, w, h)
-    else:
-        # Grayscale mode
-        rgb = np.stack([normalized, normalized, normalized], axis=-1)
-        return _build_gray(rgb, w, h)
+    # Grayscale mode
+    rgb = np.stack([normalized, normalized, normalized], axis=-1)
+    return _build_gray(rgb, w, h)
 
 
 def normalize_depth_for_display(

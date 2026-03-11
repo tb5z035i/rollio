@@ -176,7 +176,7 @@ class BaseSchedulerDriver:
                 error_message: str | None = None
                 try:
                     state.task.step()
-                except Exception as exc:  # pragma: no cover - surfaced in metrics/tests
+                except (OSError, RuntimeError, ValueError, TypeError) as exc:
                     error_message = str(exc)
                 elapsed = time.monotonic() - started_at
                 with self._metrics_lock:
