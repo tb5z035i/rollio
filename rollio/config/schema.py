@@ -36,21 +36,10 @@ def default_direct_map_allowlist(
     return []
 
 
-class CameraChannelConfig(BaseModel):
-    """Configuration for a single camera channel/stream."""
-
-    name: str = "color"  # "color", "depth", "infrared", etc.
-    width: int = 640
-    height: int = 480
-    fps: int = 30
-    pixel_format: str = "rgb24"  # "rgb24", "MJPG", "YUYV", "z16" (depth), etc.
-    enabled: bool = True
-
-
 class CameraConfig(BaseModel):
     name: str = "cam0"
     type: str = "pseudo"
-    device: int | str = 0  # device index or path (for realsense: "serial:channel")
+    device: int | str = 0  # device index, path, or RealSense serial number
     width: int = 640  # primary channel width (for single-channel compat)
     height: int = 480  # primary channel height
     fps: int = 30  # primary channel fps
@@ -58,9 +47,6 @@ class CameraConfig(BaseModel):
     id_path: str = ""  # udev ID_PATH for stable device identification
     channel: str = "color"  # for realsense: "color", "depth", or "infrared"
     options: dict[str, Any] = Field(default_factory=dict)  # backend-specific options
-    channels: list[CameraChannelConfig] = Field(
-        default_factory=list
-    )  # multi-channel config (empty = single channel mode)
 
     @field_validator("type", mode="before")
     @classmethod
@@ -69,6 +55,20 @@ class CameraConfig(BaseModel):
         if not sensor_type:
             raise ValueError("Camera type must be a non-empty string")
         return sensor_type
+
+    @model_validator(mode="after")
+    def _normalize_realsense_selector(self) -> "CameraConfig":
+        if self.type != "realsense":
+            return self
+        raw_device = str(self.device).strip()
+        if ":" not in raw_device:
+            return self
+        serial, _, channel = raw_device.partition(":")
+        self.device = serial
+        normalized_channel = channel.strip().lower()
+        if normalized_channel:
+            self.channel = normalized_channel
+        return self
 
 
 class RobotConfig(BaseModel):
@@ -123,7 +123,7 @@ class RobotConfig(BaseModel):
 
 class StorageConfig(BaseModel):
     root: str = "~/rollio_data"
-    lerobot_version: Literal["v2.1", "v3.0"] = "v2.1"
+    lerobot_version: Literal["v2.1"] = "v2.1"
 
 
 class EncoderConfig(BaseModel):
@@ -192,7 +192,7 @@ class RollioConfig(BaseModel):
     controls: ControlConfig = Field(default_factory=ControlConfig)
 
     @model_validator(mode="after")
-    def _validate_explicit_pairs(self) -> "RollioConfig":
+    def _validate_config(self) -> "RollioConfig":
         duplicate_camera_names = [
             name
             for name, count in Counter(camera.name for camera in self.cameras).items()
@@ -229,6 +229,15 @@ class RollioConfig(BaseModel):
                 "Robot type/device combinations must be unique: "
                 + ", ".join(sorted(duplicate_robot_device_keys))
             )
+
+        if self.mode == "teleop" and not self.teleop_pairs:
+            leaders = [robot for robot in self.robots if robot.role == "leader"]
+            followers = [robot for robot in self.robots if robot.role == "follower"]
+            if leaders and followers:
+                raise ValueError(
+                    "Tele-op mode now requires explicit teleop_pairs when both "
+                    "leaders and followers are configured"
+                )
 
         if self.teleop_pairs:
             from rollio.config.pairing import validate_teleop_pairs

@@ -83,14 +83,13 @@ be recorded as a video track per episode.
 |-------|------|---------|-------------|
 | `name` | string | `"cam0"` | Channel name.  Used in file paths (`videos/chunk-000/{name}/episode_*`) and LeRobot feature keys (`observation.images.{name}`). Must be unique. |
 | `type` | string | `"pseudo"` | Camera driver type.  One of `"pseudo"`, `"v4l2"`, `"realsense"`. |
-| `device` | int or string | `0` | Device identifier.  For V4L2: device index (e.g. `0` → `/dev/video0`).  For RealSense: `"<serial>:<channel>"` (e.g. `"335522070371:color"`). |
+| `device` | int or string | `0` | Device identifier.  For V4L2: device index (e.g. `0` → `/dev/video0`).  For RealSense: serial number only (e.g. `"335522070371"`). |
 | `width` | int | `640` | Frame width in pixels. |
 | `height` | int | `480` | Frame height in pixels. |
 | `fps` | int | `30` | Camera capture framerate. Should be ≥ the global `fps`. |
 | `pixel_format` | string | `"rgb24"` | Pixel format / fourcc code for the capture stream. Common values listed below. |
 | `id_path` | string | `""` | udev `ID_PATH` string for stable device identification across reboots (V4L2 only). Populated automatically by the scanner. |
 | `channel` | string | `"color"` | For RealSense cameras, which stream to use: `"color"`, `"depth"`, or `"infrared"`. Ignored for other camera types. |
-| `channels` | list | `[]` | Multi-channel configuration (reserved for future use). Leave empty for single-channel mode. |
 
 ### Camera types
 
@@ -122,7 +121,7 @@ Each physical RealSense unit exposes up to three independent streams
 (color, depth, infrared).  In the config, each stream is a separate
 camera entry with the same serial but a different `channel`.
 
-- `device`: `"<serial>:<channel>"`, for example `"335522070371:color"`.
+- `device`: serial number only, for example `"335522070371"`.
 - `channel`: `"color"`, `"depth"`, or `"infrared"`.
 - `pixel_format`: depends on channel:
   - Color: `"bgr8"`, `"rgb8"`, `"yuyv"`
@@ -154,29 +153,26 @@ cameras:
     pixel_format: MJPG
     id_path: pci-0000:af:00.0-usb-0:4:1.0
     channel: color
-    channels: []
 
   - name: overhead_color
     type: realsense
-    device: "335522070371:color"
+    device: "335522070371"
     width: 1920
     height: 1080
     fps: 30
     pixel_format: bgr8
     id_path: ""
     channel: color
-    channels: []
 
   - name: overhead_depth
     type: realsense
-    device: "335522070371:depth"
+    device: "335522070371"
     width: 1280
     height: 720
     fps: 30
     pixel_format: z16
     id_path: ""
     channel: depth
-    channels: []
 ```
 
 ---
@@ -258,6 +254,8 @@ robots:
 
 When `mode: teleop`, setup writes an explicit list of pairings so you can
 control which leader drives which follower and which mapping each pair uses.
+Configs with both leaders and followers should define these pairs explicitly;
+roles alone are no longer treated as an implicit pairing rule.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -320,7 +318,7 @@ Controls where recorded episodes are written.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `root` | string | `"~/rollio_data"` | Root directory for all datasets.  The actual data lives under `{root}/{project_name}/`. Tilde is expanded at runtime. |
-| `lerobot_version` | string | `"v2.1"` | LeRobot dataset format version.  `"v2.1"` (episode-based) is fully supported.  `"v3.0"` (sharded) is planned. |
+| `lerobot_version` | string | `"v2.1"` | LeRobot dataset format version. Only `"v2.1"` is currently supported. |
 
 ### LeRobot v2.1 directory layout
 
@@ -402,7 +400,6 @@ cameras:
     pixel_format: rgb24
     id_path: ""
     channel: color
-    channels: []
 
 robots:
   - name: leader_arm
@@ -461,7 +458,6 @@ cameras:
     pixel_format: MJPG
     id_path: pci-0000:af:00.0-usb-0:4:1.0
     channel: color
-    channels: []
 
   - name: wrist_right
     type: v4l2
@@ -472,29 +468,26 @@ cameras:
     pixel_format: MJPG
     id_path: pci-0000:af:00.0-usb-0:5:1.0
     channel: color
-    channels: []
 
   - name: overhead_color
     type: realsense
-    device: "335522070371:color"
+    device: "335522070371"
     width: 1920
     height: 1080
     fps: 30
     pixel_format: bgr8
     id_path: ""
     channel: color
-    channels: []
 
   - name: overhead_depth
     type: realsense
-    device: "335522070371:depth"
+    device: "335522070371"
     width: 1280
     height: 720
     fps: 30
     pixel_format: z16
     id_path: ""
     channel: depth
-    channels: []
 
 robots:
   - name: left_follower

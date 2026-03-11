@@ -6,8 +6,23 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from rollio.sensors.base import ImageSensor, RobotSensor
+from rollio.robot import RobotArm
+from rollio.sensors.base import ImageSensor
 from rollio.utils.time import EpisodeClock
+
+
+def _read_robot_observation(robot: RobotArm) -> tuple[float, dict[str, np.ndarray]]:
+    """Read the joint-space observation used by the legacy episode recorder."""
+
+    joint_state = robot.read_joint_state()
+    state: dict[str, np.ndarray] = {}
+    if joint_state.position is not None:
+        state["position"] = np.asarray(joint_state.position)
+    if joint_state.velocity is not None:
+        state["velocity"] = np.asarray(joint_state.velocity)
+    if joint_state.effort is not None:
+        state["effort"] = np.asarray(joint_state.effort)
+    return joint_state.timestamp, state
 
 
 @dataclass
@@ -48,7 +63,7 @@ class EpisodeRecorder:
     def __init__(
         self,
         cameras: dict[str, ImageSensor],
-        robots: dict[str, RobotSensor],
+        robots: dict[str, RobotArm],
         fps: int = 30,
     ) -> None:
         self._cameras = cameras
@@ -98,7 +113,7 @@ class EpisodeRecorder:
             latest_frames[name] = frame
 
         for name, rob in self._robots.items():
-            ts, state = rob.read()
+            ts, state = _read_robot_observation(rob)
             rel_ts = ts - t_base
             self._rob_buf[name].append((rel_ts, state))
 
@@ -129,6 +144,6 @@ class EpisodeRecorder:
             _, frame = cam.read()
             frames[name] = frame
         for name, rob in self._robots.items():
-            _, state = rob.read()
+            _, state = _read_robot_observation(rob)
             states[name] = state
         return frames, states

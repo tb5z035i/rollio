@@ -145,9 +145,24 @@ def test_encoder_config_normalizes_legacy_aliases() -> None:
 def test_rollio_config_defaults_async_pipeline_to_default_control_hz() -> None:
     cfg = RollioConfig(project_name="demo")
 
-    assert cfg.async_pipeline.telemetry_hz == DEFAULT_CONTROL_HZ  # pylint: disable=no-member
-    assert cfg.async_pipeline.control_hz == DEFAULT_CONTROL_HZ  # pylint: disable=no-member
+    assert (
+        cfg.async_pipeline.telemetry_hz == DEFAULT_CONTROL_HZ
+    )  # pylint: disable=no-member
+    assert (
+        cfg.async_pipeline.control_hz == DEFAULT_CONTROL_HZ
+    )  # pylint: disable=no-member
     assert cfg.async_pipeline.worker_bootstrap == []  # pylint: disable=no-member
+
+
+def test_realsense_camera_config_normalizes_legacy_serial_channel_device() -> None:
+    cfg = CameraConfig(
+        name="overhead_depth",
+        type="realsense",
+        device="335522070371:depth",
+    )
+
+    assert cfg.device == "335522070371"
+    assert cfg.channel == "depth"
 
 
 def test_rollio_config_save_and_load_persist_plotjuggler_flag(tmp_path: Path) -> None:
@@ -159,6 +174,15 @@ def test_rollio_config_save_and_load_persist_plotjuggler_flag(tmp_path: Path) ->
 
     assert "plotjuggler_enabled: true" in path.read_text(encoding="utf-8")
     assert loaded.plotjuggler_enabled is True
+
+
+def test_rollio_config_requires_explicit_teleop_pairs_for_pairable_robots() -> None:
+    with pytest.raises(ValueError, match="explicit teleop_pairs"):
+        RollioConfig(
+            project_name="demo",
+            mode="teleop",
+            robots=_robots(),
+        )
 
 
 def test_rollio_config_validates_explicit_pair_references() -> None:

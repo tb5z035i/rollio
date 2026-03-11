@@ -463,11 +463,15 @@ def test_sine_swing(
                 pass
 
 
-# Register tests
 TESTS = {
     "airbot_play_gravity_compensation": test_gravity_compensation,
     "airbot_play_identify": test_identify,
     "airbot_play_sine_swing": test_sine_swing,
+}
+TEST_DESCRIPTIONS = {
+    "airbot_play_gravity_compensation": "Test AIRBOT Play gravity compensation (free drive mode)",
+    "airbot_play_identify": "Test AIRBOT Play LED identification (blink orange)",
+    "airbot_play_sine_swing": "Move to zero then swing one joint with a sine wave",
 }
 
 

@@ -55,4 +55,3 @@ def test_get_plotjuggler_port_falls_back_to_default(monkeypatch) -> None:
     monkeypatch.setenv("PLOTJUGGLER_PORT", "not-a-port")
 
     assert _get_plotjuggler_port() == DEFAULT_PLOTJUGGLER_PORT
-

@@ -640,7 +640,9 @@ class RobotArm(ABC):
             joint_state.timestamp,
             tuple(
                 float(value)
-                for value in np.asarray(joint_state.position, dtype=np.float64).reshape(-1)
+                for value in np.asarray(joint_state.position, dtype=np.float64).reshape(
+                    -1
+                )
             ),
         )
 

@@ -128,7 +128,9 @@ def _trace_timeline_line(trace: TimingTrace, width: int) -> str:
     samples = _resample_tail(trace.intervals_ms, timeline_w)
     if len(samples) == 0:
         return "\x1b[90m(no history)\x1b[0m"[:width]
-    timeline = "".join(_interval_char(value, trace.target_interval_ms) for value in samples)
+    timeline = "".join(
+        _interval_char(value, trace.target_interval_ms) for value in samples
+    )
     return f"  {timeline}"[:width]
 
 
@@ -153,4 +155,3 @@ def _interval_char(value_ms: float, target_interval_ms: float | None) -> str:
     if ratio < 8.0:
         return _TIMELINE_CHARS[4]
     return _TIMELINE_CHARS[5]
-

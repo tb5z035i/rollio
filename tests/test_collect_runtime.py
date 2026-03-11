@@ -542,8 +542,10 @@ def test_async_runtime_exports_in_background(tmp_path: Path) -> None:
 
         for table in (ep0_table, ep1_table):
             ts = table.column("timestamp").to_pylist()
-            effective_hz = (len(ts) - 1) / (ts[-1] - ts[0])
-            assert abs(effective_hz - 10.0) < 0.2
+            deltas = np.diff(np.asarray(ts, dtype=np.float64))
+            assert np.all(deltas > 0.0)
+            assert float(deltas.max() - deltas.min()) < 1e-6
+            assert abs(float(deltas.mean()) - 0.1) < 0.01
 
         leader_a = _last_position(episode_1, "leader_a")
         follower_a = _last_position(episode_1, "follower_a")

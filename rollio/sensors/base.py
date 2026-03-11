@@ -174,30 +174,3 @@ class ImageSensor(ABC):
     def supports_config_change(self) -> bool:
         """Return True if this camera supports runtime config changes."""
         return False
-
-
-class RobotSensor(ABC):
-    """Abstract interface for robot proprioception (legacy).
-
-    Note: For full robot control with kinematics, control modes, etc.,
-    use the rollio.robot module instead. This class remains for backward
-    compatibility with simple proprioception-only use cases.
-    """
-
-    @abstractmethod
-    def open(self) -> None: ...
-
-    @abstractmethod
-    def read(self) -> tuple[float, dict[str, np.ndarray]]:
-        """Return (timestamp_sec, {"position": arr, "velocity": arr, ...})."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def close(self) -> None: ...
-
-    @abstractmethod
-    def info(self) -> SensorInfo: ...
-
-    @property
-    @abstractmethod
-    def num_joints(self) -> int: ...

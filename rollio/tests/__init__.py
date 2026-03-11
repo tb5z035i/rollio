@@ -1,49 +1,46 @@
-"""Rollio hardware tests.
-
-This module provides hardware test functions that can be run via
-the `rollio test` command.
-"""
+"""Packaged hardware/manual helpers used by ``rollio test``."""
 
 from __future__ import annotations
 
-# Registry of available tests with descriptions
-AVAILABLE_TESTS: dict[str, str] = {
-    "airbot_play_gravity_compensation": "Test AIRBOT Play gravity compensation (free drive mode)",
-    "airbot_play_identify": "Test AIRBOT Play LED identification (blink orange)",
-    "airbot_play_sine_swing": "Move to zero then swing one joint with a sine wave",
-    "airbot_g2_sine_position": "Run AIRBOT G2 sine target-position test using AIRBOTG2",
-}
+from importlib import import_module
+
+_TEST_MODULES = (
+    "rollio.tests.airbot_play",
+    "rollio.tests.airbot_g2",
+)
+
+
+def _load_test_registry() -> tuple[dict[str, str], dict[str, object]]:
+    descriptions: dict[str, str] = {}
+    runners: dict[str, object] = {}
+    for module_name in _TEST_MODULES:
+        module = import_module(module_name)
+        descriptions.update(getattr(module, "TEST_DESCRIPTIONS", {}))
+        runners.update(getattr(module, "TESTS", {}))
+    return descriptions, runners
 
 
 def get_available_tests() -> list[str]:
-    """Return list of available test names."""
-    return list(AVAILABLE_TESTS.keys())
+    """Return the hardware helper names exposed via ``rollio test``."""
+
+    descriptions, _ = _load_test_registry()
+    return list(descriptions.keys())
 
 
 def get_test_description(test_name: str) -> str | None:
-    """Return description for a test."""
-    return AVAILABLE_TESTS.get(test_name)
+    """Return the short human description for one hardware helper."""
+
+    descriptions, _ = _load_test_registry()
+    return descriptions.get(test_name)
 
 
 def run_test(test_name: str, **kwargs) -> bool:
-    """Run a named test.
+    """Run one packaged hardware helper by name."""
 
-    Args:
-        test_name: Name of the test to run
-        **kwargs: Arguments to pass to the test function
-
-    Returns:
-        True if test passed, False otherwise
-    """
-    if test_name.startswith("airbot_play_"):
-        from rollio.tests.airbot_play import run_test as run_airbot_test
-
-        return run_airbot_test(test_name, **kwargs)
-    if test_name.startswith("airbot_g2_"):
-        from rollio.tests.airbot_g2 import run_test as run_airbot_test
-
-        return run_airbot_test(test_name, **kwargs)
-
-    print(f"Unknown test: {test_name}")
-    print(f"Available tests: {', '.join(get_available_tests())}")
-    return False
+    descriptions, runners = _load_test_registry()
+    runner = runners.get(test_name)
+    if runner is None:
+        print(f"Unknown test: {test_name}")
+        print(f"Available tests: {', '.join(descriptions)}")
+        return False
+    return bool(runner(**kwargs))

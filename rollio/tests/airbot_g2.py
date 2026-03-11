@@ -699,6 +699,9 @@ def compare_modes(
 TESTS = {
     "airbot_g2_sine_position": test_sine_position,
 }
+TEST_DESCRIPTIONS = {
+    "airbot_g2_sine_position": "Run AIRBOT G2 sine target-position test using AIRBOTG2",
+}
 
 
 def run_test(test_name: str, **kwargs) -> bool:

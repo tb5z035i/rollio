@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.util
 import threading
 from typing import Any
 
+from rollio.robot.airbot.control_loop import AirbotCommandPump
 from rollio.robot.airbot.can import probe_airbot_device, query_airbot_properties
+from rollio.robot.base import ControlMode
 from rollio.robot.can_utils import is_can_interface_up, scan_can_interfaces
 from rollio.robot.scanner import DetectedRobot
 
@@ -48,8 +49,8 @@ def get_shared_airbot_runtime(ah: Any) -> tuple[Any, Any]:
     """Return the shared AIRBOT executor and ``io_context``.
 
     The SDK is typically imported once per process, so all AIRBOT arms and
-    standalone EEFs will share the same executor created with the 8-worker
-    pattern used by the vendor teleoperation example.
+    standalone EEFs will share the same executor created with the configured
+    shared-worker count.
 
     The cache is keyed by SDK-module identity so tests can swap in isolated
     mocked SDK modules without leaking shared state between runs.
@@ -64,6 +65,56 @@ def get_shared_airbot_runtime(ah: Any) -> tuple[Any, Any]:
         io_context = executor.get_io_context()
         _AIRBOT_SHARED_RUNTIMES[runtime_key] = (ah, executor, io_context)
         return executor, io_context
+
+
+def start_airbot_command_pump(
+    current_pump: AirbotCommandPump | None,
+    *,
+    name: str,
+    period_sec: float,
+    apply_enabled: Any,
+    apply_mode: Any,
+    cycle: Any,
+    initial_enabled: bool,
+    initial_mode: ControlMode,
+) -> AirbotCommandPump:
+    """Create and start one command pump when absent."""
+
+    if current_pump is not None:
+        return current_pump
+    command_pump = AirbotCommandPump(
+        name=name,
+        period_sec=period_sec,
+        apply_enabled=apply_enabled,
+        apply_mode=apply_mode,
+        cycle=cycle,
+        initial_enabled=initial_enabled,
+        initial_mode=initial_mode,
+    )
+    command_pump.start()
+    return command_pump
+
+
+def stop_airbot_command_pump(command_pump: AirbotCommandPump | None) -> None:
+    """Stop one command pump when present."""
+
+    if command_pump is not None:
+        command_pump.stop()
+
+
+def publish_airbot_command(
+    command_pump: AirbotCommandPump | None,
+    command: Any,
+    *,
+    owner: str | None = None,
+) -> bool:
+    """Publish one latest command when the pump is active."""
+
+    if command_pump is None:
+        return False
+    if owner is None:
+        return command_pump.publish_command(command)
+    return command_pump.publish_command(command, owner=owner)
 
 
 def normalize_airbot_eef_type(eef_type: str | None) -> str:
@@ -144,5 +195,8 @@ __all__ = [
     "get_shared_airbot_runtime",
     "is_airbot_available",
     "normalize_airbot_eef_type",
+    "publish_airbot_command",
     "scan_airbot_detected_robots",
+    "start_airbot_command_pump",
+    "stop_airbot_command_pump",
 ]

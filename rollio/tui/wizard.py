@@ -33,16 +33,21 @@ from rollio.config.schema import (
     TeleopPairConfig,
     EncoderConfig,
 )
+from rollio.defaults import DEFAULT_CONTROL_HZ
 from rollio.episode.codecs import (
     available_depth_codec_options,
     available_rgb_codec_options,
 )
+from rollio.robot import (
+    DetectedRobot,
+    PseudoRobotArm,
+    scan_robots as scan_robot_devices,
+)
 from rollio.sensors.base import CameraFormat, CameraMode, ImageSensor
 from rollio.sensors.pseudo_camera import PseudoCamera
-from rollio.tui.timing import build_timing_panel_lines, make_timing_trace
-from rollio.sensors.pseudo_robot import PseudoRobot
+from rollio.tui.runtime_view import RuntimeViewMonitor
 from rollio.sensors.realsense_camera import RealSenseCamera
-from rollio.sensors.scanner import DetectedDevice, scan_cameras, scan_robots
+from rollio.sensors.scanner import DetectedDevice, scan_cameras
 from rollio.sensors.v4l2_camera import V4L2Camera
 from rollio.tui.renderer import (
     RENDER_MODES,
@@ -230,9 +235,33 @@ def _make_camera(
     return None
 
 
-def _make_robot(dev: DetectedDevice) -> PseudoRobot | None:
-    if dev.dtype == "pseudo":
-        rob = PseudoRobot(name="preview", n_joints=dev.properties.get("num_joints", 6))
+class _PseudoRobotPreview:
+    """Simple pseudo-robot preview driven through the RobotArm stack."""
+
+    def __init__(self, n_joints: int = 6) -> None:
+        self._robot = PseudoRobotArm(name="preview", n_dof=n_joints, noise_level=0.0)
+        self._t0 = 0.0
+
+    def open(self) -> None:
+        self._robot.open()
+        self._robot.enable()
+        self._t0 = time.monotonic()
+
+    def close(self) -> None:
+        self._robot.close()
+
+    def read_joint_state(self):
+        elapsed = time.monotonic() - self._t0
+        q = np.zeros(self._robot.n_dof, dtype=np.float64)
+        if self._robot.n_dof > 0:
+            q[-1] = 0.8 * np.sin(elapsed * 2.0)
+        self._robot.set_joint_position(q)
+        return self._robot.read_joint_state()
+
+
+def _make_robot(dev: DetectedRobot) -> _PseudoRobotPreview | None:
+    if dev.robot_type == "pseudo":
+        rob = _PseudoRobotPreview(n_joints=dev.n_dof)
         rob.open()
         return rob
     return None
@@ -1109,9 +1138,9 @@ def _screen_cameras(
     return configs
 
 
-def _get_airbot_robot(dev: DetectedDevice):
+def _get_airbot_robot(dev: DetectedRobot):
     """Get a runtime robot instance for AIRBOT identification preview."""
-    if not str(dev.dtype).startswith("airbot_"):
+    if not str(dev.robot_type).startswith("airbot_"):
         return None
     try:
         from rollio.robot import AIRBOTE2B, AIRBOTG2, AIRBOTPlay, is_airbot_available
@@ -1119,11 +1148,11 @@ def _get_airbot_robot(dev: DetectedDevice):
         if not is_airbot_available():
             return None
         can_interface = dev.properties.get("can_interface", str(dev.device_id))
-        if dev.dtype == "airbot_play" and AIRBOTPlay is not None:
+        if dev.robot_type == "airbot_play" and AIRBOTPlay is not None:
             return AIRBOTPlay(can_interface=can_interface)
-        if dev.dtype == "airbot_e2b" and AIRBOTE2B is not None:
+        if dev.robot_type == "airbot_e2b" and AIRBOTE2B is not None:
             return AIRBOTE2B(can_interface=can_interface)
-        if dev.dtype == "airbot_g2" and AIRBOTG2 is not None:
+        if dev.robot_type == "airbot_g2" and AIRBOTG2 is not None:
             return AIRBOTG2(can_interface=can_interface)
         return None
     except (OSError, RuntimeError, ValueError, TypeError, ImportError):
@@ -1131,7 +1160,7 @@ def _get_airbot_robot(dev: DetectedDevice):
 
 
 def _screen_robots(
-    term: _Term, out, devices: list[DetectedDevice], _total_steps: int = 5
+    term: _Term, out, devices: list[DetectedRobot], _total_steps: int = 5
 ) -> list[RobotConfig] | None:
     """Robot identification screen — oscillation + name prompt."""
     configs: list[RobotConfig] = []
@@ -1141,10 +1170,12 @@ def _screen_robots(
 
     for i, dev in enumerate(devices):
         rob = _make_robot(dev)
+        robot_type = dev.robot_type
+        num_joints = dev.n_dof
         chosen_name: str | None = None
-        chosen_role: str = _default_robot_role(dev.dtype)
+        chosen_role: str = _default_robot_role(robot_type)
         chosen_target_tracking_mode: str = "mit"
-        default_name = _default_robot_name(dev.dtype, i)
+        default_name = _default_robot_name(robot_type, i)
         phase = "preview"  # "preview" → "name" → "role" → "tracking" → done
         _needs_clear = True
 
@@ -1170,12 +1201,11 @@ def _screen_robots(
                 buf,
                 4,
                 2,
-                f"Type: {dev.dtype}  Joints: "
-                f"{dev.properties.get('num_joints', '?')}",
+                f"Type: {robot_type}  Joints: {num_joints}",
             )
 
             led_block = _airbot_led_block()
-            if dev.dtype == "pseudo":
+            if robot_type == "pseudo":
                 _draw_text(
                     buf,
                     5,
@@ -1183,7 +1213,7 @@ def _screen_robots(
                     "\x1b[93m⟳ Last joint oscillating "
                     "(simulated identification)\x1b[0m",
                 )
-            elif dev.dtype == "airbot_play" and airbot_robot is not None:
+            elif robot_type == "airbot_play" and airbot_robot is not None:
                 _draw_text(
                     buf,
                     5,
@@ -1191,7 +1221,7 @@ def _screen_robots(
                     f"\x1b[93m⟳ LED blinking orange {led_block} + gravity compensation "
                     "(move arm to identify)\x1b[0m",
                 )
-            elif dev.dtype == "airbot_e2b" and airbot_robot is not None:
+            elif robot_type == "airbot_e2b" and airbot_robot is not None:
                 _draw_text(
                     buf,
                     5,
@@ -1199,7 +1229,7 @@ def _screen_robots(
                     f"\x1b[93m⟳ LED blinking orange {led_block} + live E2B position "
                     "(move E2B to identify)\x1b[0m",
                 )
-            elif dev.dtype == "airbot_g2" and airbot_robot is not None:
+            elif robot_type == "airbot_g2" and airbot_robot is not None:
                 _draw_text(
                     buf,
                     5,
@@ -1210,12 +1240,12 @@ def _screen_robots(
 
             # Robot state display (re-read every iteration)
             pos = None
-            n_joints = dev.properties.get("num_joints", 6)
+            n_joints = num_joints
             command_debug: tuple[str, str] | None = None
 
             # Try AIRBOT robot first (for real hardware)
             if (
-                str(dev.dtype).startswith("airbot_")
+                str(robot_type).startswith("airbot_")
                 and airbot_robot is not None
                 and airbot_robot._is_open
             ):
@@ -1231,11 +1261,12 @@ def _screen_robots(
                 except (OSError, RuntimeError, ValueError, TypeError):
                     pass
 
-            # Fall back to legacy sensor interface (for pseudo robot)
+            # Fall back to pseudo preview helper for simulated robots.
             if pos is None and rob is not None:
-                _, state = rob.read()
-                pos = state.get("position", np.zeros(0))
-                n_joints = len(pos) if len(pos) > 0 else n_joints
+                joint_state = rob.read_joint_state()
+                if joint_state.position is not None:
+                    pos = joint_state.position
+                    n_joints = len(pos) if len(pos) > 0 else n_joints
 
             # Display joint positions
             start_row = 7
@@ -1244,12 +1275,12 @@ def _screen_robots(
                 bar_w = min(40, W - 25)
                 for j in range(n_joints):
                     p = pos[j] if j < len(pos) else 0.0
-                    value_text, frac = _format_joint_preview(dev.dtype, float(p))
+                    value_text, frac = _format_joint_preview(robot_type, float(p))
                     bar_len = int(frac * bar_w)
                     bar = "█" * bar_len + "░" * (bar_w - bar_len)
                     # For pseudo robot, mark last joint as moving
                     marker = ""
-                    if dev.dtype == "pseudo" and j == n_joints - 1:
+                    if robot_type == "pseudo" and j == n_joints - 1:
                         marker = " \x1b[91m← moving\x1b[0m"
                     _draw_text(
                         buf,
@@ -1261,7 +1292,7 @@ def _screen_robots(
                 state_rows = n_joints
 
             command_rows = 0
-            if dev.dtype in {"airbot_e2b", "airbot_g2"} and command_debug is not None:
+            if robot_type in {"airbot_e2b", "airbot_g2"} and command_debug is not None:
                 cmd_type, args_text = command_debug
                 max_text_w = max(16, W - 8)
                 cmd_line = f"Cmd: {cmd_type}"
@@ -1276,10 +1307,7 @@ def _screen_robots(
                 command_rows = 2
 
             prompt_row = max(
-                start_row
-                + max(dev.properties.get("num_joints", 6), state_rows, 1)
-                + command_rows
-                + 2,
+                start_row + max(num_joints, state_rows, 1) + command_rows + 2,
                 H - 5,
             )
 
@@ -1388,7 +1416,7 @@ def _screen_robots(
                     continue
                 chosen_role = "leader" if result.lower().startswith("l") else "follower"
                 phase = (
-                    "tracking" if dev.dtype in {"airbot_play", "airbot_g2"} else "done"
+                    "tracking" if robot_type in {"airbot_play", "airbot_g2"} else "done"
                 )
 
             elif phase == "tracking":
@@ -1434,14 +1462,14 @@ def _screen_robots(
 
         if chosen_name:
             robot_options = {}
-            if dev.dtype in {"airbot_play", "airbot_g2"}:
+            if robot_type in {"airbot_play", "airbot_g2"}:
                 robot_options["target_tracking_mode"] = chosen_target_tracking_mode
             configs.append(
                 RobotConfig(
                     name=chosen_name,
-                    type=dev.dtype,
+                    type=robot_type,
                     role=chosen_role,
-                    num_joints=dev.properties.get("num_joints", 6),
+                    num_joints=num_joints,
                     device=str(dev.properties.get("can_interface", dev.device_id)),
                     options=robot_options,
                 )
@@ -1696,15 +1724,15 @@ def _match_camera_devices(
 
 def _match_robot_devices(
     rob_configs: list[RobotConfig],
-    rob_devs: list[DetectedDevice],
-) -> list[tuple[RobotConfig, DetectedDevice | None]]:
+    rob_devs: list[DetectedRobot],
+) -> list[tuple[RobotConfig, DetectedRobot | None]]:
     """Match configured robots to detected devices for preview metadata."""
-    matched: list[tuple[RobotConfig, DetectedDevice | None]] = []
+    matched: list[tuple[RobotConfig, DetectedRobot | None]] = []
     used_rob_devs: set[int] = set()
     for rc in rob_configs:
         matched_dev = None
         for di, dev in enumerate(rob_devs):
-            same_type = dev.dtype == rc.type
+            same_type = dev.robot_type == rc.type
             same_device = str(
                 dev.properties.get("can_interface", dev.device_id)
             ) == str(rc.device)
@@ -1714,7 +1742,7 @@ def _match_robot_devices(
                 break
         if matched_dev is None:
             for di, dev in enumerate(rob_devs):
-                if di not in used_rob_devs and dev.dtype == rc.type:
+                if di not in used_rob_devs and dev.robot_type == rc.type:
                     matched_dev = dev
                     used_rob_devs.add(di)
                     break
@@ -1737,7 +1765,7 @@ def _screen_summary(
     cam_configs: list[CameraConfig],
     rob_configs: list[RobotConfig],
     cam_devs: list[DetectedDevice],
-    rob_devs: list[DetectedDevice],
+    rob_devs: list[DetectedRobot],
     project_name: str,
     storage_root: str,
     output_path: str,
@@ -1759,20 +1787,16 @@ def _screen_summary(
 
     mode_idx = 0  # "true" (24-bit truecolor) for best preview quality
     show_debug = False
-    _t_prev = time.monotonic()
-    _fps = 0.0
-    _render_loop_count = 0
-    _render_last_loop_us = 0.0
-    _render_avg_loop_us = 0.0
-    _render_gap_history_ms: deque[float] = deque(maxlen=64)
-    _render_work_history_ms: deque[float] = deque(maxlen=64)
+    view_monitor = RuntimeViewMonitor()
     result = None
     _needs_clear = True
     selected_cam = 0 if cam_entries else -1
     _needs_restart = True
     preview_runtime: CollectionRuntimeService | None = None
-    preview_started_at: float | None = None
     preview_target_fps = max([30, *[cfg.fps for cfg in cam_configs]])
+    preview_scheduler_driver = "round_robin"
+    preview_telemetry_hz = DEFAULT_CONTROL_HZ
+    preview_control_hz = DEFAULT_CONTROL_HZ
 
     def _draw_text_clear(buf, row: int, col: int, text: str, clear_w: int = 0):
         """Draw text and clear to specified width or end of line."""
@@ -1803,28 +1827,9 @@ def _screen_summary(
         )
         return create_runtime_service(
             preview_cfg,
-            use_worker=True,
-            scheduler_driver="round_robin",
+            scheduler_driver=preview_scheduler_driver,
             preview_live_feedback=True,
         )
-
-    def _aggregate_task_rate(
-        task_metrics: dict[str, object], prefix: str
-    ) -> tuple[float | None, int, float | None]:
-        if preview_started_at is None:
-            return None, 0, None
-        runtime_age = max(time.monotonic() - preview_started_at, 1e-6)
-        matching = [
-            metric for name, metric in task_metrics.items() if name.startswith(prefix)
-        ]
-        if not matching:
-            return None, 0, None
-        rate_hz = sum(metric.run_count / runtime_age for metric in matching) / len(
-            matching
-        )
-        overruns = sum(metric.overrun_count for metric in matching)
-        avg_step_ms = sum(metric.avg_step_ms for metric in matching) / len(matching)
-        return rate_hz, overruns, avg_step_ms
 
     def _render_rate_text(target_hz: int, observed_hz: float | None) -> str:
         if observed_hz is None:
@@ -1833,7 +1838,6 @@ def _screen_summary(
 
     try:
         while result is None:
-            loop_started_at = time.monotonic()
             if _needs_restart:
                 if preview_runtime is not None:
                     preview_runtime.close()
@@ -1852,58 +1856,22 @@ def _screen_summary(
                     message="Starting live preview runtime...",
                     work=_start_preview_runtime,
                 )
-                preview_started_at = time.monotonic()
+                view_monitor.mark_runtime_started()
                 _needs_clear = True
                 _needs_restart = False
 
             W, H = term.cols, term.rows
             buf = io.BytesIO()
-            snapshot = preview_runtime.snapshot() if preview_runtime is not None else None
+            if preview_runtime is not None:
+                loop_started_at, snapshot = view_monitor.poll_snapshot(preview_runtime)
+            else:
+                loop_started_at = time.monotonic()
+                snapshot = None
             latest_frames = snapshot.latest_frames if snapshot is not None else {}
             latest_robot_states = (
                 snapshot.latest_robot_states if snapshot is not None else {}
             )
-            driver_metrics = (
-                snapshot.scheduler_metrics["driver"]
-                if snapshot is not None
-                else None
-            )
-            timing_diagnostics = (
-                snapshot.timing_diagnostics if snapshot is not None else None
-            )
-            task_metrics = (
-                driver_metrics.task_metrics if driver_metrics is not None else {}
-            )
-            telemetry_actual_hz, telemetry_overruns, telemetry_avg_step_ms = (
-                _aggregate_task_rate(
-                    task_metrics,
-                    "robot-",
-                )
-            )
-            control_actual_hz, control_overruns, control_avg_step_ms = (
-                _aggregate_task_rate(
-                    task_metrics,
-                    "teleop-",
-                )
-            )
-            driver_last_loop_us = (
-                driver_metrics.last_loop_us
-                if driver_metrics is not None and driver_metrics.loop_run_count > 0
-                else None
-            )
-            driver_avg_loop_us = (
-                driver_metrics.avg_loop_us
-                if driver_metrics is not None and driver_metrics.loop_run_count > 0
-                else None
-            )
-
-            # FPS tracking
-            _t_now = time.monotonic()
-            _dt = _t_now - _t_prev
-            _t_prev = _t_now
-            if _dt > 0:
-                _fps = 0.9 * _fps + 0.1 / _dt
-                _render_gap_history_ms.append(_dt * 1000.0)
+            driver_summary = view_monitor.summarize_driver(snapshot)
 
             _draw_header(buf, W, step, total_steps, "Summary — Live Preview")
 
@@ -1952,7 +1920,9 @@ def _screen_summary(
                 info_w,
             )
             row += 1
-            pj_state = "\x1b[92mon\x1b[0m" if plotjuggler_enabled else "\x1b[90moff\x1b[0m"
+            pj_state = (
+                "\x1b[92mon\x1b[0m" if plotjuggler_enabled else "\x1b[90moff\x1b[0m"
+            )
             _draw_text_clear(
                 buf,
                 row,
@@ -1966,7 +1936,7 @@ def _screen_summary(
                     buf,
                     row,
                     2,
-                    f"│ \x1b[1mDriver:\x1b[0m \x1b[90m{preview_runtime.scheduler_driver}\x1b[0m",
+                    f"│ \x1b[1mDriver:\x1b[0m \x1b[90m{preview_scheduler_driver}\x1b[0m",
                     info_w,
                 )
                 row += 1
@@ -1974,7 +1944,7 @@ def _screen_summary(
                     buf,
                     row,
                     2,
-                    f"│ \x1b[1mTelemetry:\x1b[0m \x1b[90m{_render_rate_text(preview_runtime.telemetry_hz, telemetry_actual_hz)}\x1b[0m",
+                    f"│ \x1b[1mTelemetry:\x1b[0m \x1b[90m{_render_rate_text(preview_telemetry_hz, driver_summary.telemetry.actual_hz)}\x1b[0m",
                     info_w,
                 )
                 row += 1
@@ -1982,7 +1952,7 @@ def _screen_summary(
                     buf,
                     row,
                     2,
-                    f"│ \x1b[1mControl:\x1b[0m \x1b[90m{_render_rate_text(preview_runtime.control_hz, control_actual_hz)}\x1b[0m",
+                    f"│ \x1b[1mControl:\x1b[0m \x1b[90m{_render_rate_text(preview_control_hz, driver_summary.control.actual_hz)}\x1b[0m",
                     info_w,
                 )
                 row += 1
@@ -1990,15 +1960,19 @@ def _screen_summary(
                     buf,
                     row,
                     2,
-                    f"│ \x1b[1mOverruns:\x1b[0m \x1b[90mtelem {telemetry_overruns} / ctrl {control_overruns}\x1b[0m",
+                    f"│ \x1b[1mOverruns:\x1b[0m \x1b[90mtelem {driver_summary.telemetry.overruns} / ctrl {driver_summary.control.overruns}\x1b[0m",
                     info_w,
                 )
                 row += 1
                 step_parts = []
-                if telemetry_avg_step_ms is not None:
-                    step_parts.append(f"telem {telemetry_avg_step_ms:4.1f}ms")
-                if control_avg_step_ms is not None:
-                    step_parts.append(f"ctrl {control_avg_step_ms:4.1f}ms")
+                if driver_summary.telemetry.avg_step_ms is not None:
+                    step_parts.append(
+                        f"telem {driver_summary.telemetry.avg_step_ms:4.1f}ms"
+                    )
+                if driver_summary.control.avg_step_ms is not None:
+                    step_parts.append(
+                        f"ctrl {driver_summary.control.avg_step_ms:4.1f}ms"
+                    )
                 if step_parts:
                     _draw_text_clear(
                         buf,
@@ -2008,40 +1982,35 @@ def _screen_summary(
                         info_w,
                     )
                     row += 1
-                if driver_last_loop_us is not None and driver_avg_loop_us is not None:
+                if (
+                    driver_summary.driver_last_loop_us is not None
+                    and driver_summary.driver_avg_loop_us is not None
+                ):
                     _draw_text_clear(
                         buf,
                         row,
                         2,
-                        f"│ \x1b[1mMain loop:\x1b[0m \x1b[90m{driver_last_loop_us:6.0f}us last / {driver_avg_loop_us:6.0f}us avg\x1b[0m",
+                        f"│ \x1b[1mMain loop:\x1b[0m \x1b[90m{driver_summary.driver_last_loop_us:6.0f}us last / {driver_summary.driver_avg_loop_us:6.0f}us avg\x1b[0m",
                         info_w,
                     )
                     row += 1
-                if _render_loop_count > 0:
+                if view_monitor.render_loop_count > 0:
                     _draw_text_clear(
                         buf,
                         row,
                         2,
-                        f"│ \x1b[1mRender:\x1b[0m \x1b[90m{_render_last_loop_us:6.0f}us last / {_render_avg_loop_us:6.0f}us avg\x1b[0m",
+                        f"│ \x1b[1mRender:\x1b[0m \x1b[90m{view_monitor.render_last_loop_us:6.0f}us last / {view_monitor.render_avg_loop_us:6.0f}us avg\x1b[0m",
                         info_w,
                     )
                     row += 1
                 if show_debug:
                     target_render_ms = 1000.0 / max(preview_target_fps, 1)
                     debug_panel_h = max(8, min(16, H - row - 8))
-                    debug_lines = build_timing_panel_lines(
+                    debug_lines = view_monitor.build_timing_lines(
                         panel_w=max(info_w - 4, 16),
                         panel_h=debug_panel_h,
-                        diagnostics=timing_diagnostics,
-                        render_gap_trace=make_timing_trace(
-                            tuple(_render_gap_history_ms),
-                            target_interval_ms=target_render_ms,
-                            age_ms=0.0 if _render_gap_history_ms else None,
-                        ),
-                        render_work_trace=make_timing_trace(
-                            tuple(_render_work_history_ms),
-                            target_interval_ms=target_render_ms,
-                        ),
+                        snapshot=snapshot,
+                        target_render_ms=target_render_ms,
                     )
                     for line in debug_lines:
                         _draw_text_clear(buf, row, 2, f"│ {line}", info_w)
@@ -2314,7 +2283,7 @@ def _screen_summary(
                     buf,
                     2,
                     W - 18,
-                    f"\x1b[48;5;234m\x1b[38;5;82m FPS: {_fps:5.1f} \x1b[0m",
+                    f"\x1b[48;5;234m\x1b[38;5;82m FPS: {view_monitor.actual_fps:5.1f} \x1b[0m",
                 )
 
             # ── Footer / controls ──
@@ -2423,20 +2392,10 @@ def _screen_summary(
                             _needs_restart = True
                         _needs_clear = True
 
-            render_elapsed_us = (time.monotonic() - loop_started_at) * 1_000_000.0
-            _render_loop_count += 1
-            _render_last_loop_us = render_elapsed_us
-            _render_work_history_ms.append(render_elapsed_us / 1000.0)
-            if _render_loop_count == 1:
-                _render_avg_loop_us = render_elapsed_us
-            else:
-                prev = _render_loop_count - 1
-                _render_avg_loop_us = (
-                    (_render_avg_loop_us * prev) + render_elapsed_us
-                ) / _render_loop_count
+            view_monitor.note_render_work(loop_started_at)
 
             # Throttle to ~30 FPS
-            _el = time.monotonic() - _t_now
+            _el = time.monotonic() - loop_started_at
             if _el < 0.033:
                 time.sleep(0.033 - _el)
 
@@ -2473,7 +2432,7 @@ def run_wizard(
         include_simulated=simulated_cameras > 0,
         simulated_count=simulated_cameras,
     )
-    rob_devs = scan_robots(
+    rob_devs = scan_robot_devices(
         include_simulated=simulated_arms > 0,
         simulated_count=simulated_arms,
     )

@@ -6,6 +6,7 @@ import json
 import time
 from pathlib import Path
 
+import numpy as np
 import pyarrow.parquet as pq
 
 from rollio.collect import create_runtime_service
@@ -75,7 +76,6 @@ def test_worker_runtime_service_records_under_snapshot_polling(tmp_path: Path) -
     cfg = _build_worker_service_config(tmp_path)
     service = create_runtime_service(
         cfg,
-        use_worker=True,
         scheduler_driver="round_robin",
     )
     try:
@@ -99,19 +99,23 @@ def test_worker_runtime_service_records_under_snapshot_polling(tmp_path: Path) -
             time.sleep(0.02)
 
         episode = service.stop_episode()
-        export = service.keep_episode(episode)
-        assert service.wait_for_episode_export(export.episode_index, timeout=20.0) is True
+        export_episode_index = service.keep_episode()
+        assert (
+            service.wait_for_episode_export(export_episode_index, timeout=20.0) is True
+        )
 
         dataset_root = tmp_path / "worker_service_collection"
         table = pq.read_table(
             dataset_root / "data" / "chunk-000" / "episode_000000.parquet"
         )
         timestamps = table.column("timestamp").to_pylist()
-        effective_hz = (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
+        deltas = np.diff(np.asarray(timestamps, dtype=np.float64))
 
         assert poll_count >= 10
         assert episode.duration > 0.5
-        assert abs(effective_hz - 10.0) < 0.2
+        assert np.all(deltas > 0.0)
+        assert float(deltas.max() - deltas.min()) < 1e-6
+        assert abs(float(deltas.mean()) - 0.1) < 0.01
         assert latest_snapshot.recording is True
         assert "leader_arm" in latest_snapshot.latest_robot_states
     finally:
@@ -130,7 +134,6 @@ def test_worker_runtime_service_bootstrap_entries_support_custom_factories(
     cfg.async_pipeline.worker_bootstrap = ["tests.worker_factory_plugin:register"]
     service = create_runtime_service(
         cfg,
-        use_worker=True,
         scheduler_driver="round_robin",
     )
     try:
@@ -140,7 +143,9 @@ def test_worker_runtime_service_bootstrap_entries_support_custom_factories(
         snapshot = service.snapshot()
         while snapshot.latest_frames.get("cam_main") is None:
             if time.monotonic() >= deadline:
-                raise AssertionError("Bootstrapped worker never produced a preview frame.")
+                raise AssertionError(
+                    "Bootstrapped worker never produced a preview frame."
+                )
             time.sleep(0.05)
             snapshot = service.snapshot()
 

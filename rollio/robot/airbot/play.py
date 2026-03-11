@@ -34,7 +34,10 @@ from rollio.robot.airbot.control_loop import (
 from rollio.robot.airbot.shared import (
     get_shared_airbot_runtime,
     is_airbot_available,
+    publish_airbot_command,
     scan_airbot_detected_robots,
+    start_airbot_command_pump,
+    stop_airbot_command_pump,
 )
 from rollio.robot.base import (
     ControlMode,
@@ -688,9 +691,8 @@ class AIRBOTPlay(RobotArm):
             self._emit_fixed_tracking(command)
 
     def _start_command_pump(self) -> None:
-        if self._command_pump is not None:
-            return
-        self._command_pump = AirbotCommandPump(
+        self._command_pump = start_airbot_command_pump(
+            self._command_pump,
             name=f"rollio-airbot-play-{self._can_interface}",
             period_sec=self._dt,
             apply_enabled=self._apply_enabled_request,
@@ -699,12 +701,9 @@ class AIRBOTPlay(RobotArm):
             initial_enabled=self._is_enabled,
             initial_mode=self._control_mode,
         )
-        self._command_pump.start()
 
     def _stop_command_pump(self) -> None:
-        if self._command_pump is None:
-            return
-        self._command_pump.stop()
+        stop_airbot_command_pump(self._command_pump)
         self._command_pump = None
 
     def _publish_command(
@@ -719,9 +718,11 @@ class AIRBOTPlay(RobotArm):
         *,
         owner: str | None = None,
     ) -> bool:
-        if self._command_pump is None:
-            return False
-        return self._command_pump.publish_command(command, owner=owner)
+        return publish_airbot_command(
+            self._command_pump,
+            command,
+            owner=owner,
+        )
 
     # ── Properties ────────────────────────────────────────────────────────
 

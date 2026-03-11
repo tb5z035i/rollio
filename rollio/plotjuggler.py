@@ -152,4 +152,3 @@ def close_plotjuggler_publisher() -> None:
 
 
 atexit.register(close_plotjuggler_publisher)
-

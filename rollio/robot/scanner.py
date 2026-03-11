@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from rollio.robot.base import RobotArm
 
 
 @dataclass
@@ -20,30 +16,32 @@ class DetectedRobot:
     properties: dict = field(default_factory=dict)
 
 
-# ─── Robot type registry ─────────────────────────────────────────────
+def _build_pseudo_detected_robots(count: int) -> list[DetectedRobot]:
+    if count <= 0:
+        return []
+    return [
+        DetectedRobot(
+            robot_type="pseudo",
+            device_id=idx,
+            label=f"Pseudo Robot {idx + 1} (6-DOF simulation)",
+            n_dof=6,
+            properties={"num_joints": 6, "simulated": True},
+        )
+        for idx in range(count)
+    ]
 
 
-def _get_robot_classes() -> list[type["RobotArm"]]:
-    """Return robot classes that should be scanned directly."""
-    from rollio.robot.pseudo_robot import PseudoRobotArm
-
-    return [PseudoRobotArm]
-
-
-def scan_robots() -> list[DetectedRobot]:
+def scan_robots(
+    *,
+    include_simulated: bool = False,
+    simulated_count: int = 0,
+) -> list[DetectedRobot]:
     """Scan for available robots using registered robot classes.
 
-    Each robot class implements its own scan() method.
-    This function aggregates results from all registered types.
+    Hardware detection is always attempted. Simulated pseudo robots are only
+    included when explicitly requested.
     """
     found: list[DetectedRobot] = []
-
-    for robot_cls in _get_robot_classes():
-        try:
-            devices = robot_cls.scan()
-            found.extend(devices)
-        except (OSError, RuntimeError, ValueError, TypeError):
-            pass
 
     try:
         from rollio.robot.airbot.shared import scan_airbot_detected_robots
@@ -51,5 +49,8 @@ def scan_robots() -> list[DetectedRobot]:
         found.extend(scan_airbot_detected_robots())
     except ImportError:
         pass
+
+    if include_simulated:
+        found.extend(_build_pseudo_detected_robots(simulated_count))
 
     return found

@@ -176,9 +176,7 @@ def test_plotjuggler_enabled_robot_publishes_configured_name(monkeypatch) -> Non
     published: list[tuple[str, float, tuple[float, ...]]] = []
     monkeypatch.setattr(
         "rollio.robot.base.publish_joint_state",
-        lambda name, timestamp, position: published.append(
-            (name, timestamp, position)
-        ),
+        lambda name, timestamp, position: published.append((name, timestamp, position)),
     )
 
     robot = build_robots_from_config(cfg)["leader_arm"]

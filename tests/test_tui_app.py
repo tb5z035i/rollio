@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,38 +10,11 @@ from rollio.collect import RuntimeSnapshot, RuntimeTimingDiagnostics, TimingTrac
 from rollio.config.schema import CameraConfig, ControlConfig, RollioConfig
 from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.tui import app
+from tests.support_tui import CollectionFakeTerm, FakeStdout
 
 STATUS_LINES = getattr(app, "_status_lines")
 HELP_PANEL_LINES = getattr(app, "_help_panel_lines")
 ROBOT_PANEL_LINES = getattr(app, "_robot_panel_lines")
-
-
-class _FakeTerm:
-    cols = 80
-    rows = 24
-
-    def __init__(self, keys: list[str]) -> None:
-        self._keys = iter(keys)
-
-    def __enter__(self) -> "_FakeTerm":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
-
-    def key(self) -> str | None:
-        return next(self._keys, None)
-
-
-class _FakeStdout:
-    def __init__(self) -> None:
-        self.buffer = io.BytesIO()
-
-    def write(self, value: str) -> int:
-        return len(value)
-
-    def flush(self) -> None:
-        return None
 
 
 class _FakeRuntime:
@@ -56,8 +28,6 @@ class _FakeRuntime:
     ) -> None:
         self.recording = False
         self.elapsed = 0.0
-        self.video_codec = "mpeg4"
-        self.depth_codec = "rawvideo"
         self._frames = frames or {}
         self._robot_states = robot_states or {}
         self._diagnostics = diagnostics or RuntimeTimingDiagnostics()
@@ -84,28 +54,16 @@ class _FakeRuntime:
         self.call_order.append("return_zero")
         return {}
 
-    def export_status(self) -> tuple[int, int]:
-        return 0, 0
-
     def snapshot(self) -> RuntimeSnapshot:
         return RuntimeSnapshot(
             recording=self.recording,
             elapsed=self.elapsed,
             latest_frames=self._frames,
             latest_robot_states=self._robot_states,
-            export_status=self.export_status(),
+            export_status=(0, 0),
             timing_diagnostics=self._diagnostics,
             scheduler_metrics={},
         )
-
-    def latest_frames(self) -> dict[str, np.ndarray]:
-        return self._frames
-
-    def latest_robot_states(self) -> dict[str, dict[str, np.ndarray]]:
-        return self._robot_states
-
-    def timing_diagnostics(self) -> RuntimeTimingDiagnostics:
-        return self._diagnostics
 
     def start_episode(self) -> None:
         self.recording = True
@@ -114,14 +72,12 @@ class _FakeRuntime:
         self.recording = False
         return self._pending_episode
 
-    def keep_episode(self, episode: object | None = None) -> object:
-        self.keep_calls.append(episode if episode is not None else self._pending_episode)
-        return SimpleNamespace(done_event=SimpleNamespace(is_set=lambda: False))
+    def keep_episode(self) -> int:
+        self.keep_calls.append(self._pending_episode)
+        return int(getattr(self._pending_episode, "episode_index", 0))
 
-    def discard_episode(self, episode: object | None = None) -> None:
-        self.discard_calls.append(
-            episode if episode is not None else self._pending_episode
-        )
+    def discard_episode(self) -> None:
+        self.discard_calls.append(self._pending_episode)
 
 
 def _run_collection_once(
@@ -130,13 +86,13 @@ def _run_collection_once(
     keys: list[str],
     cfg: RollioConfig,
 ) -> str:
-    fake_stdout = _FakeStdout()
+    fake_stdout = FakeStdout()
     monkeypatch.setattr(
         app,
         "create_runtime_service",
         lambda *_args, **_kwargs: fake_runtime,
     )
-    monkeypatch.setattr(app, "_Term", lambda: _FakeTerm(keys))
+    monkeypatch.setattr(app, "_Term", lambda: CollectionFakeTerm(keys))
     monkeypatch.setattr(app.sys, "stdout", fake_stdout)
     monkeypatch.setattr(app.time, "sleep", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "calc_render_size", lambda *args, **kwargs: (4, 1))
@@ -148,14 +104,13 @@ def _run_collection_once(
 
 
 def test_status_lines_include_queue_and_codecs() -> None:
-    runtime = SimpleNamespace(
-        video_codec="libx264",
-        depth_codec="ffv1",
+    cfg = SimpleNamespace(
+        encoder=SimpleNamespace(video_codec="libx264", depth_codec="ffv1")
     )
     snapshot = RuntimeSnapshot(recording=False, elapsed=0.0)
 
     line1, line2 = STATUS_LINES(
-        runtime,
+        cfg,
         snapshot,
         pending_episode=None,
         episodes_kept=4,
@@ -176,12 +131,14 @@ def test_status_lines_include_queue_and_codecs() -> None:
 
 
 def test_status_lines_blink_recording_indicator_at_half_hz(monkeypatch) -> None:
-    runtime = SimpleNamespace(video_codec="libx264", depth_codec="ffv1")
+    cfg = SimpleNamespace(
+        encoder=SimpleNamespace(video_codec="libx264", depth_codec="ffv1")
+    )
     snapshot = RuntimeSnapshot(recording=True, elapsed=1.2)
 
     monkeypatch.setattr(app.time, "monotonic", lambda: 0.25)
     line_on, _ = STATUS_LINES(
-        runtime,
+        cfg,
         snapshot,
         pending_episode=None,
         episodes_kept=0,
@@ -193,7 +150,7 @@ def test_status_lines_blink_recording_indicator_at_half_hz(monkeypatch) -> None:
 
     monkeypatch.setattr(app.time, "monotonic", lambda: 1.25)
     line_off, _ = STATUS_LINES(
-        runtime,
+        cfg,
         snapshot,
         pending_episode=None,
         episodes_kept=0,
@@ -210,12 +167,14 @@ def test_status_lines_blink_recording_indicator_at_half_hz(monkeypatch) -> None:
 
 
 def test_status_lines_show_review_pending_question_mark() -> None:
-    runtime = SimpleNamespace(video_codec="libx264", depth_codec="ffv1")
+    cfg = SimpleNamespace(
+        encoder=SimpleNamespace(video_codec="libx264", depth_codec="ffv1")
+    )
     snapshot = RuntimeSnapshot(recording=False, elapsed=0.0)
     pending_episode = SimpleNamespace(episode_index=3, duration=0.4)
 
     line1, _ = STATUS_LINES(
-        runtime,
+        cfg,
         snapshot,
         pending_episode=pending_episode,
         episodes_kept=0,
@@ -233,10 +192,10 @@ def test_help_panel_shows_key_help_and_codecs() -> None:
     cfg = SimpleNamespace(
         mode="teleop",
         controls=SimpleNamespace(start_stop=" ", keep="k", discard="d"),
+        encoder=SimpleNamespace(video_codec="mpeg4", depth_codec="rawvideo"),
     )
-    runtime = SimpleNamespace(video_codec="mpeg4", depth_codec="rawvideo")
 
-    lines = HELP_PANEL_LINES(cfg, runtime, panel_w=32, panel_h=16)
+    lines = HELP_PANEL_LINES(cfg, panel_w=32, panel_h=16)
     joined = "\n".join(lines)
 
     assert "RGB codec:" in joined

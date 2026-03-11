@@ -21,7 +21,10 @@ from rollio.robot.airbot.shared import (
     get_shared_airbot_runtime,
     is_airbot_available,
     normalize_airbot_eef_type,
+    publish_airbot_command,
     scan_airbot_detected_robots,
+    start_airbot_command_pump,
+    stop_airbot_command_pump,
 )
 from rollio.robot.base import (
     ControlMode,
@@ -490,9 +493,8 @@ class _AIRBOTStandaloneEEFCommon:
         return True
 
     def _start_command_pump(self) -> None:
-        if self._command_pump is not None:
-            return
-        self._command_pump = AirbotCommandPump(
+        self._command_pump = start_airbot_command_pump(
+            self._command_pump,
             name=f"rollio-{self.ROBOT_TYPE}-{self._can_interface}",
             period_sec=self._dt,
             apply_enabled=self._apply_enabled_request,
@@ -501,21 +503,16 @@ class _AIRBOTStandaloneEEFCommon:
             initial_enabled=self._is_enabled,
             initial_mode=self._control_mode,
         )
-        self._command_pump.start()
 
     def _stop_command_pump(self) -> None:
-        if self._command_pump is None:
-            return
-        self._command_pump.stop()
+        stop_airbot_command_pump(self._command_pump)
         self._command_pump = None
 
     def _publish_command(
         self,
         command: AirbotFreeDriveIntent | AirbotFixedTrackingIntent | None,
     ) -> bool:
-        if self._command_pump is None:
-            return False
-        return self._command_pump.publish_command(command)
+        return publish_airbot_command(self._command_pump, command)
 
     def _apply_mode_request(self, mode: ControlMode) -> bool:
         del mode

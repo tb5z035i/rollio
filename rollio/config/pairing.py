@@ -5,29 +5,43 @@ from __future__ import annotations
 from collections import Counter
 
 from rollio.config.schema import RobotConfig, TeleopPairConfig
+from rollio.teleop_policy import (
+    default_mapper_name,
+    supports_joint_direct_mapping as supports_joint_direct_pairing,
+    supports_pose_fkik_mapping as supports_pose_fkik_pairing,
+)
 
 
 def supports_joint_direct_mapping(leader: RobotConfig, follower: RobotConfig) -> bool:
     """Return True when a leader/follower pair can use direct joint mapping."""
-    return (
-        leader.num_joints == follower.num_joints
-        and follower.type in leader.direct_map_allowlist
-        and leader.type in follower.direct_map_allowlist
+    return supports_joint_direct_pairing(
+        leader_type=leader.type,
+        leader_n_dof=leader.num_joints,
+        leader_allowlist=leader.direct_map_allowlist,
+        follower_type=follower.type,
+        follower_n_dof=follower.num_joints,
+        follower_allowlist=follower.direct_map_allowlist,
     )
 
 
 def supports_pose_fkik_mapping(leader: RobotConfig, follower: RobotConfig) -> bool:
     """Return True when a leader/follower pair can use pose FK/IK."""
-    return leader.num_joints > 1 and follower.num_joints > 1
+    return supports_pose_fkik_pairing(
+        leader_n_dof=leader.num_joints,
+        follower_n_dof=follower.num_joints,
+    )
 
 
 def default_mapper_for_pair(leader: RobotConfig, follower: RobotConfig) -> str:
     """Choose the default mapper for one explicit tele-op pair."""
-    if supports_joint_direct_mapping(leader, follower):
-        return "joint_direct"
-    if supports_pose_fkik_mapping(leader, follower):
-        return "pose_fk_ik"
-    return "pose_fk_ik"
+    return default_mapper_name(
+        leader_type=leader.type,
+        leader_n_dof=leader.num_joints,
+        leader_allowlist=leader.direct_map_allowlist,
+        follower_type=follower.type,
+        follower_n_dof=follower.num_joints,
+        follower_allowlist=follower.direct_map_allowlist,
+    )
 
 
 def suggest_teleop_pairs(robots: list[RobotConfig]) -> list[TeleopPairConfig]:

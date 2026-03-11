@@ -268,6 +268,7 @@ class TestAIRBOTPlayMocked:
         mock_import.return_value = (mock_ah, True)
 
         from rollio.robot.airbot.play import AIRBOTPlay
+        from rollio.robot.airbot.shared import AIRBOT_SHARED_EXECUTOR_WORKERS
 
         robot = AIRBOTPlay(can_interface="can0")
 
@@ -286,6 +287,7 @@ class TestAIRBOTPlayMocked:
         mock_import.return_value = (mock_ah, True)
 
         from rollio.robot.airbot.play import AIRBOTPlay
+        from rollio.robot.airbot.shared import AIRBOT_SHARED_EXECUTOR_WORKERS
 
         robot = AIRBOTPlay(can_interface="can0")
 
@@ -293,7 +295,9 @@ class TestAIRBOTPlayMocked:
         robot.open()
         assert robot._is_open
         mock_arm.init.assert_called_once()
-        mock_ah.create_asio_executor.assert_called_once_with(8)
+        mock_ah.create_asio_executor.assert_called_once_with(
+            AIRBOT_SHARED_EXECUTOR_WORKERS
+        )
 
         # Close
         robot.close()
@@ -320,6 +324,7 @@ class TestAIRBOTPlayMocked:
 
         from rollio.robot.airbot.eef import AIRBOTG2
         from rollio.robot.airbot.play import AIRBOTPlay
+        from rollio.robot.airbot.shared import AIRBOT_SHARED_EXECUTOR_WORKERS
 
         arm = AIRBOTPlay(can_interface="can0")
         gripper = AIRBOTG2(can_interface="can1")
@@ -329,7 +334,9 @@ class TestAIRBOTPlayMocked:
 
         shared_executor = mock_ah.create_asio_executor.return_value
         shared_io_context = shared_executor.get_io_context.return_value
-        mock_ah.create_asio_executor.assert_called_once_with(8)
+        mock_ah.create_asio_executor.assert_called_once_with(
+            AIRBOT_SHARED_EXECUTOR_WORKERS
+        )
         assert arm._executor is shared_executor
         assert gripper._executor is shared_executor
         assert mock_arm.init.call_args[0][0] is shared_io_context
@@ -1053,10 +1060,13 @@ class TestAIRBOTEEFMocked:
         mock_import.return_value = (mock_ah, True)
 
         from rollio.robot.airbot.eef import AIRBOTG2
+        from rollio.robot.airbot.shared import AIRBOT_SHARED_EXECUTOR_WORKERS
 
         robot = AIRBOTG2(can_interface="can0")
         robot.open()
-        mock_ah.create_asio_executor.assert_called_once_with(8)
+        mock_ah.create_asio_executor.assert_called_once_with(
+            AIRBOT_SHARED_EXECUTOR_WORKERS
+        )
         robot.enable()
         assert robot.set_control_mode(ControlMode.TARGET_TRACKING) is True
         assert robot.target_tracking_mode == "mit"
@@ -1074,13 +1084,13 @@ class TestAIRBOTEEFMocked:
         assert payload.pos == [0.06]
         assert payload.vel == [0.0]
         assert payload.eff == [0.0]
-        assert payload.mit_kp == [10.0]
-        assert payload.mit_kd == [0.2]
+        assert payload.mit_kp == [AIRBOTG2.TARGET_TRACKING_MIT_KP]
+        assert payload.mit_kd == [AIRBOTG2.TARGET_TRACKING_MIT_KD]
         assert payload.current_threshold == [0.0]
         command_debug = robot.latest_command_debug()
         assert command_debug is not None
         assert command_debug[0] == "MIT"
-        assert "mit_kp=[10.0000]" in command_debug[1]
+        assert f"mit_kp=[{AIRBOTG2.TARGET_TRACKING_MIT_KP:7.4f}]" in command_debug[1]
         mock_eef.pvt.assert_not_called()
         robot.close()
 
@@ -1343,8 +1353,8 @@ class TestAIRBOTEEFMocked:
         payload = mock_eef.mit.call_args[0][0]
         assert 0.0 <= payload.pos[0] <= 0.07
         assert payload.vel == [0.0]
-        assert payload.mit_kp == [10.0]
-        assert payload.mit_kd == [0.2]
+        assert payload.mit_kp == [AIRBOTG2.TARGET_TRACKING_MIT_KP]
+        assert payload.mit_kd == [AIRBOTG2.TARGET_TRACKING_MIT_KD]
         assert payload.eff == [0.0]
         assert payload.current_threshold == [0.0]
         command_debug = robot.latest_command_debug()

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from rollio.robot.scanner import DetectedRobot
-from rollio.sensors.scanner import DetectedDevice, scan_cameras, scan_robots
+from rollio.robot.scanner import DetectedRobot, scan_robots
+from rollio.sensors.scanner import DetectedDevice, scan_cameras
 
 
 def _camera_device(dtype: str, device_id: int | str, label: str) -> DetectedDevice:
@@ -60,14 +60,8 @@ def test_scan_cameras_adds_requested_simulated_devices(monkeypatch) -> None:
 
 def test_scan_robots_excludes_pseudo_by_default(monkeypatch) -> None:
     monkeypatch.setattr(
-        "rollio.robot.scan_robots",
+        "rollio.robot.airbot.shared.scan_airbot_detected_robots",
         lambda: [
-            DetectedRobot(
-                robot_type="pseudo",
-                device_id=0,
-                label="Pseudo",
-                n_dof=6,
-            ),
             DetectedRobot(
                 robot_type="airbot_play",
                 device_id="can0",
@@ -80,15 +74,18 @@ def test_scan_robots_excludes_pseudo_by_default(monkeypatch) -> None:
 
     devices = scan_robots()
 
-    assert [device.dtype for device in devices] == ["airbot_play"]
+    assert [device.robot_type for device in devices] == ["airbot_play"]
     assert devices[0].device_id == "can0"
 
 
 def test_scan_robots_adds_requested_simulated_devices(monkeypatch) -> None:
-    monkeypatch.setattr("rollio.robot.scan_robots", lambda: [])
+    monkeypatch.setattr(
+        "rollio.robot.airbot.shared.scan_airbot_detected_robots",
+        lambda: [],
+    )
 
     devices = scan_robots(include_simulated=True, simulated_count=3)
 
-    assert [device.dtype for device in devices] == ["pseudo", "pseudo", "pseudo"]
+    assert [device.robot_type for device in devices] == ["pseudo", "pseudo", "pseudo"]
     assert [device.device_id for device in devices] == [0, 1, 2]
     assert devices[0].label == "Pseudo Robot 1 (6-DOF simulation)"

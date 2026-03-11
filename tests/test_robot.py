@@ -760,7 +760,7 @@ class TestScanner:
 
     def test_scan_robots(self) -> None:
         """Test scanning for robots."""
-        devices = scan_robots()
+        devices = scan_robots(include_simulated=True, simulated_count=1)
 
         assert len(devices) >= 1  # At least pseudo robot
 
@@ -831,7 +831,7 @@ class TestIntegration:
     def test_full_workflow(self) -> None:
         """Test complete robot workflow."""
         # Scan for robots
-        devices = scan_robots()
+        devices = scan_robots(include_simulated=True, simulated_count=1)
         assert len(devices) > 0
 
         # Create robot

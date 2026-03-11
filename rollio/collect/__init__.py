@@ -29,8 +29,6 @@ from rollio.collect.runtime import (
 )
 from rollio.collect.service import (
     CollectionRuntimeService,
-    EpisodeExportHandle,
-    InProcessCollectionRuntimeService,
     WorkerCollectionRuntimeService,
     create_runtime_service,
 )
@@ -57,13 +55,11 @@ __all__ = [
     "AutoMapper",
     "build_camera_from_config",
     "ExportRecord",
-    "EpisodeExportHandle",
     "DriverMetrics",
     "FrameSample",
     "FrameSourceMetrics",
     "CollectionRuntimeService",
     "create_runtime_service",
-    "InProcessCollectionRuntimeService",
     "JointSpaceDirectMapper",
     "PoseSpaceFkIkMapper",
     "RecordedEpisode",

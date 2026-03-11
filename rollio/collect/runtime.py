@@ -13,7 +13,6 @@ from pathlib import Path
 
 import numpy as np
 
-from rollio.config import suggest_teleop_pairs
 from rollio.config.schema import CameraConfig, RollioConfig, TeleopPairConfig
 from rollio.defaults import DEFAULT_CONTROL_HZ
 from rollio.episode.recorder import EpisodeData
@@ -910,9 +909,7 @@ class AsyncCollectionRuntime:
         self._latest_pair_modes: dict[str, str] = {}
         self._control_run_history = _TimingHistory()
         self._telemetry_run_history = _TimingHistory()
-        self._valid_robot_sample_histories = {
-            name: _TimingHistory() for name in robots
-        }
+        self._valid_robot_sample_histories = {name: _TimingHistory() for name in robots}
         self._preview_keepalive_names: set[str] = set()
         self._frame_sources: dict[str, ThreadedCameraFrameSource] = {}
         self._scheduler = None
@@ -1196,14 +1193,21 @@ class AsyncCollectionRuntime:
         with self._state_lock:
             return [dict(entry) for entry in self._action_layout]
 
+    def _driver_metrics_snapshot(self) -> DriverMetrics:
+        if self._scheduler is not None:
+            return self._scheduler.metrics()
+        return DriverMetrics(driver_name=self._scheduler_driver_name, task_metrics={})
+
     def scheduler_metrics(
         self,
     ) -> dict[str, DriverMetrics | dict[str, FrameSourceMetrics]]:
-        driver_metrics = (
-            self._scheduler.metrics()
-            if self._scheduler is not None
-            else DriverMetrics(driver_name=self._scheduler_driver_name, task_metrics={})
-        )
+        driver_metrics = self._driver_metrics_snapshot()
+        return self._scheduler_metrics_from_driver(driver_metrics)
+
+    def _scheduler_metrics_from_driver(
+        self,
+        driver_metrics: DriverMetrics,
+    ) -> dict[str, DriverMetrics | dict[str, FrameSourceMetrics]]:
         camera_metrics = {
             name: frame_source.metrics()
             for name, frame_source in self._frame_sources.items()
@@ -1214,11 +1218,13 @@ class AsyncCollectionRuntime:
         }
 
     def timing_diagnostics(self) -> RuntimeTimingDiagnostics:
-        driver_metrics = (
-            self._scheduler.metrics()
-            if self._scheduler is not None
-            else DriverMetrics(driver_name=self._scheduler_driver_name, task_metrics={})
-        )
+        driver_metrics = self._driver_metrics_snapshot()
+        return self._timing_diagnostics_from_driver(driver_metrics)
+
+    def _timing_diagnostics_from_driver(
+        self,
+        driver_metrics: DriverMetrics,
+    ) -> RuntimeTimingDiagnostics:
         scheduler_intervals = tuple(
             getattr(driver_metrics, "recent_loop_intervals_ms", ())
         )
@@ -1250,7 +1256,9 @@ class AsyncCollectionRuntime:
         return RuntimeTimingDiagnostics(
             scheduler_loop=TimingTrace(
                 intervals_ms=scheduler_intervals,
-                target_interval_ms=min(target_intervals_ms) if target_intervals_ms else None,
+                target_interval_ms=(
+                    min(target_intervals_ms) if target_intervals_ms else None
+                ),
                 last_gap_ms=scheduler_intervals[-1] if scheduler_intervals else None,
                 max_gap_ms=max(scheduler_intervals) if scheduler_intervals else None,
                 age_ms=getattr(driver_metrics, "last_loop_age_ms", None),
@@ -1274,6 +1282,7 @@ class AsyncCollectionRuntime:
         elapsed = 0.0
         if episode is not None:
             elapsed = max(0.0, time.monotonic() - episode._started_at)  # noqa: SLF001
+        driver_metrics = self._driver_metrics_snapshot()
         return RuntimeSnapshot(
             recording=episode is not None,
             elapsed=elapsed,
@@ -1282,8 +1291,8 @@ class AsyncCollectionRuntime:
             latest_pair_modes=latest_pair_modes,
             action_layout=action_layout,
             export_status=self.export_status(),
-            scheduler_metrics=self.scheduler_metrics(),
-            timing_diagnostics=self.timing_diagnostics(),
+            scheduler_metrics=self._scheduler_metrics_from_driver(driver_metrics),
+            timing_diagnostics=self._timing_diagnostics_from_driver(driver_metrics),
         )
 
     def observe_control_run(self, timestamp: float | None = None) -> None:
@@ -1364,14 +1373,8 @@ def build_teleop_pairs_from_config(
 ) -> list[TeleopPairBinding]:
     """Resolve tele-operation pairs from configuration."""
 
-    pair_cfgs: list[TeleopPairConfig]
-    if cfg.teleop_pairs:
-        pair_cfgs = cfg.teleop_pairs
-    else:
-        pair_cfgs = suggest_teleop_pairs(cfg.robots)
-
     pairs: list[TeleopPairBinding] = []
-    for pair_cfg in pair_cfgs:
+    for pair_cfg in cfg.teleop_pairs:
         leader = robots[pair_cfg.leader]
         follower = robots[pair_cfg.follower]
         if leader is follower:

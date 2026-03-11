@@ -32,7 +32,7 @@ plotjuggler_enabled: false
 #   type:         Driver — "pseudo" | "v4l2" | "realsense".
 #   device:       Device identifier.
 #                   v4l2:      integer index (0 → /dev/video0).
-#                   realsense: "<serial>:<channel>" (e.g. "335522070371:color").
+#                   realsense: serial number only (e.g. "335522070371").
 #                   pseudo:    ignored.
 #   width/height: Capture resolution in pixels.
 #   fps:          Capture framerate (should be ≥ global fps).
@@ -42,7 +42,6 @@ plotjuggler_enabled: false
 #                   pseudo:    "rgb24".
 #   id_path:      (v4l2 only) udev ID_PATH for stable device identification.
 #   channel:      (realsense only) "color" | "depth" | "infrared".
-#   channels:     Reserved for multi-channel mode. Leave as [].
 
 cameras: []
   # --- Example: USB webcam via V4L2 ---
@@ -55,43 +54,39 @@ cameras: []
   #   pixel_format: MJPG
   #   id_path: ""          # auto-filled by 'rollio setup'
   #   channel: color
-  #   channels: []
 
   # --- Example: RealSense color stream ---
   # - name: overhead_color
   #   type: realsense
-  #   device: "335522070371:color"
+  #   device: "335522070371"
   #   width: 1920
   #   height: 1080
   #   fps: 30
   #   pixel_format: bgr8
   #   id_path: ""
   #   channel: color
-  #   channels: []
 
   # --- Example: RealSense depth stream ---
   # - name: overhead_depth
   #   type: realsense
-  #   device: "335522070371:depth"
+  #   device: "335522070371"
   #   width: 1280
   #   height: 720
   #   fps: 30
   #   pixel_format: z16
   #   id_path: ""
   #   channel: depth
-  #   channels: []
 
   # --- Example: RealSense infrared stream ---
   # - name: overhead_ir
   #   type: realsense
-  #   device: "335522070371:infrared"
+  #   device: "335522070371"
   #   width: 1280
   #   height: 800
   #   fps: 30
   #   pixel_format: y8
   #   id_path: ""
   #   channel: infrared
-  #   channels: []
 
   # --- Simulated camera example (for testing) ---
   # - name: cam_0
@@ -103,7 +98,6 @@ cameras: []
   #   pixel_format: rgb24
   #   id_path: ""
   #   channel: color
-  #   channels: []
 
 # ── Robots ────────────────────────────────────────────────────────────────
 # Each entry is one proprioception channel recorded per episode.
@@ -169,6 +163,7 @@ robots: []
 #   mapper: "joint_direct" | "pose_fk_ik"
 #
 # Leave this empty when using intervention mode.
+# Tele-op configurations with both leaders and followers must define pairs here.
 
 teleop_pairs: []
   # - name: pair_0
@@ -178,8 +173,7 @@ teleop_pairs: []
 
 # ── Storage ───────────────────────────────────────────────────────────────
 # root:            Base directory. Episodes are written to {root}/{project_name}/.
-# lerobot_version: Dataset format. "v2.1" (episode-based, fully supported)
-#                  or "v3.0" (sharded, planned).
+# lerobot_version: Dataset format. Only "v2.1" is currently supported.
 
 storage:
   root: ~/rollio_data

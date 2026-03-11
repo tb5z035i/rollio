@@ -98,6 +98,4 @@ def test_publish_plotjuggler_sample_uses_internal_rollio_publisher(
     assert published_by_name["target_g2"] == (0.02,)
     assert published_by_name["follower_g2"] == (0.03,)
     assert published_by_name["error_g2"] == pytest.approx((0.01,))
-    assert published_by_name["error_arm_rms"] == pytest.approx(
-        (float(np.sqrt(1.0)),)
-    )
+    assert published_by_name["error_arm_rms"] == pytest.approx((float(np.sqrt(1.0)),))

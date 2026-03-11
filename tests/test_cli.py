@@ -46,6 +46,7 @@ def test_setup_cli_passes_simulated_device_counts(
         "rollio.tui.wizard",
         types.SimpleNamespace(run_wizard=fake_run_wizard),
     )
+    monkeypatch.setattr(cli, "_acquire_setup_lock", contextlib.nullcontext)
 
     output_path = tmp_path / "custom_rollio.yaml"
     monkeypatch.setattr(
@@ -94,6 +95,7 @@ def test_setup_cli_defaults_to_no_simulated_devices(
         "rollio.tui.wizard",
         types.SimpleNamespace(run_wizard=fake_run_wizard),
     )
+    monkeypatch.setattr(cli, "_acquire_setup_lock", contextlib.nullcontext)
 
     output_path = tmp_path / "default_rollio.yaml"
     monkeypatch.setattr(
@@ -115,14 +117,17 @@ def test_setup_cli_rejects_second_running_setup(
     def should_not_run(*args, **kwargs):
         raise AssertionError("run_wizard should not be called when setup lock is held")
 
-    @contextlib.contextmanager
-    def fake_setup_lock():
-        raise cli.SetupAlreadyRunningError(
-            "Another rollio setup is already running. Lock holder pid: 1234."
-        )
-        yield
+    class _FailingSetupLock:
+        def __enter__(self):
+            raise cli.SetupAlreadyRunningError(
+                "Another rollio setup is already running. Lock holder pid: 1234."
+            )
 
-    monkeypatch.setattr(cli, "_acquire_setup_lock", fake_setup_lock)
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            del exc_type, exc, tb
+            return False
+
+    monkeypatch.setattr(cli, "_acquire_setup_lock", lambda: _FailingSetupLock())
     monkeypatch.setitem(
         sys.modules,
         "rollio.tui.wizard",

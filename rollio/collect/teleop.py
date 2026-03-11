@@ -8,6 +8,10 @@ from typing import Literal
 import numpy as np
 
 from rollio.robot import JointState, Pose, RobotArm
+from rollio.teleop_policy import (
+    supports_joint_direct_mapping as supports_joint_direct_policy,
+    supports_pose_fkik_mapping as supports_pose_fkik_policy,
+)
 
 MapperMode = Literal["auto", "joint_direct", "pose_fk_ik"]
 ResolvedMapperMode = Literal["joint_direct", "pose_fk_ik", "noop"]
@@ -25,15 +29,23 @@ def supports_joint_direct_runtime(leader: RobotArm, follower: RobotArm) -> bool:
     return (
         leader.has_position_feedback
         and follower.has_position_feedback
-        and leader.n_dof == follower.n_dof
-        and follower.info.robot_type in _direct_map_allowlist(leader)
-        and leader.info.robot_type in _direct_map_allowlist(follower)
+        and supports_joint_direct_policy(
+            leader_type=leader.info.robot_type,
+            leader_n_dof=leader.n_dof,
+            leader_allowlist=_direct_map_allowlist(leader),
+            follower_type=follower.info.robot_type,
+            follower_n_dof=follower.n_dof,
+            follower_allowlist=_direct_map_allowlist(follower),
+        )
     )
 
 
 def supports_pose_fkik_runtime(leader: RobotArm, follower: RobotArm) -> bool:
     """Return True when a runtime pair should use pose FK/IK."""
-    return leader.has_frame_pose_feedback and leader.n_dof > 1 and follower.n_dof > 1
+    return leader.has_frame_pose_feedback and supports_pose_fkik_policy(
+        leader_n_dof=leader.n_dof,
+        follower_n_dof=follower.n_dof,
+    )
 
 
 @dataclass

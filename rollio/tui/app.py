@@ -10,13 +10,11 @@ import sys
 import termios
 import time
 import tty
-from collections import deque
 from typing import Protocol
 
 import numpy as np
 
 from rollio.collect import (
-    CollectionRuntimeService,
     RecordedEpisodeSummary,
     RuntimeSnapshot,
     create_runtime_service,
@@ -30,7 +28,7 @@ from rollio.tui.renderer import (
     calc_render_size,
     render_frame,
 )
-from rollio.tui.timing import build_timing_panel_lines, make_timing_trace
+from rollio.tui.runtime_view import RuntimeViewMonitor
 
 # ── Synchronised output ───────────────────────────────────────────────
 _SYNC_S = b"\x1b[?2026h"
@@ -262,7 +260,6 @@ def _estimate_robot_panel_height(
 
 def _help_panel_lines(
     cfg: RollioConfig,
-    runtime: CollectionRuntimeService,
     panel_w: int,
     panel_h: int,
 ) -> list[str]:
@@ -273,8 +270,8 @@ def _help_panel_lines(
     lines = [
         f"\x1b[1;96m{' HELP ':─<{max(panel_w - 1, 1)}}\x1b[0m",
         f"\x1b[1mMode:\x1b[0m {cfg.mode}",
-        f"\x1b[1mRGB codec:\x1b[0m {runtime.video_codec}",
-        f"\x1b[1mDepth codec:\x1b[0m {runtime.depth_codec}",
+        f"\x1b[1mRGB codec:\x1b[0m {cfg.encoder.video_codec}",
+        f"\x1b[1mDepth codec:\x1b[0m {cfg.encoder.depth_codec}",
         "",
         "\x1b[1mKeys\x1b[0m",
         f"  {start_key:<8} start / stop",
@@ -308,7 +305,7 @@ def _state_line(
 
 
 def _status_lines(
-    runtime: CollectionRuntimeService,
+    cfg: RollioConfig,
     snapshot: RuntimeSnapshot,
     pending_episode: _EpisodeSummaryLike | None,
     *,
@@ -327,8 +324,8 @@ def _status_lines(
     )
     line2 = (
         f" Render: {MODE_LABELS[render_mode]}"
-        f" │ RGB codec: {runtime.video_codec}"
-        f" │ Depth codec: {runtime.depth_codec}"
+        f" │ RGB codec: {cfg.encoder.video_codec}"
+        f" │ Depth codec: {cfg.encoder.depth_codec}"
     )
     return line1, line2
 
@@ -340,34 +337,26 @@ def _status_lines(
 
 def run_collection(cfg: RollioConfig) -> None:
     """Run the data collection TUI."""
-    runtime = create_runtime_service(cfg, use_worker=True)
+    runtime = create_runtime_service(cfg)
+    view_monitor = RuntimeViewMonitor()
     robot_types = {robot.name: robot.type for robot in cfg.robots}
     runtime_opened = False
 
     episodes_kept = 0
     pending_episode: RecordedEpisodeSummary | None = None
     mode_idx = 0  # start at "true" (24-bit)
-    _t_prev_frame = time.monotonic()
-    actual_fps = 0.0
     show_debug = False
-    render_gap_history_ms: deque[float] = deque(maxlen=64)
-    render_work_history_ms: deque[float] = deque(maxlen=64)
 
     try:
         runtime.open()
+        view_monitor.mark_runtime_started()
         runtime_opened = True
         with _Term() as term:
             out = sys.stdout.buffer
             target_dt = 1.0 / max(cfg.fps, 1)
             while True:
-                t0 = time.monotonic()
-                _frame_dt = t0 - _t_prev_frame
-                _t_prev_frame = t0
-                if _frame_dt > 0:
-                    actual_fps = 0.9 * actual_fps + 0.1 / _frame_dt
-                    render_gap_history_ms.append(_frame_dt * 1000.0)
+                t0, snapshot = view_monitor.poll_snapshot(runtime)
                 render_mode = RENDER_MODES[mode_idx]
-                snapshot = runtime.snapshot()
 
                 # ── Input ────────────────────────────────────────
                 key = term.key()
@@ -410,9 +399,7 @@ def run_collection(cfg: RollioConfig) -> None:
                 W, H = term.cols, term.rows
                 status_h = 2
                 side_w = (
-                    max(32, min(48, W // 3))
-                    if show_debug
-                    else max(26, min(36, W // 4))
+                    max(32, min(48, W // 3)) if show_debug else max(26, min(36, W // 4))
                 )
                 left_w = max(20, W - side_w)
                 body_h = max(2, H - status_h)
@@ -433,33 +420,24 @@ def run_collection(cfg: RollioConfig) -> None:
                     if robot_h
                     else []
                 )
-                timing_diagnostics = snapshot.timing_diagnostics
                 side_lines = (
-                    build_timing_panel_lines(
+                    view_monitor.build_timing_lines(
                         panel_w=side_w,
                         panel_h=body_h,
-                        diagnostics=timing_diagnostics,
-                        render_gap_trace=make_timing_trace(
-                            tuple(render_gap_history_ms),
-                            target_interval_ms=target_dt * 1000.0,
-                            age_ms=0.0 if render_gap_history_ms else None,
-                        ),
-                        render_work_trace=make_timing_trace(
-                            tuple(render_work_history_ms),
-                            target_interval_ms=target_dt * 1000.0,
-                        ),
+                        snapshot=snapshot,
+                        target_render_ms=target_dt * 1000.0,
                     )
                     if show_debug
-                    else _help_panel_lines(cfg, runtime, side_w, body_h)
+                    else _help_panel_lines(cfg, side_w, body_h)
                 )
                 status_line_1, status_line_2 = _status_lines(
-                    runtime,
+                    cfg,
                     snapshot,
                     pending_episode,
                     episodes_kept=episodes_kept,
                     pending_exports=pending_exports,
                     completed_exports=completed_exports,
-                    actual_fps=actual_fps,
+                    actual_fps=view_monitor.actual_fps,
                     render_mode=render_mode,
                 )
 
@@ -501,7 +479,11 @@ def run_collection(cfg: RollioConfig) -> None:
                                 height=preview_h,
                                 lines=["\x1b[90m(no preview)\x1b[0m"],
                             )
-                        label_row = cam_row if not dedicated_label_row else cam_row + rendered_preview_h
+                        label_row = (
+                            cam_row
+                            if not dedicated_label_row
+                            else cam_row + rendered_preview_h
+                        )
                         _write_lines(
                             frame_out,
                             row=label_row,
@@ -555,7 +537,7 @@ def run_collection(cfg: RollioConfig) -> None:
 
                 out.write(_SYNC_S + bytes(frame_out) + status_bytes + _SYNC_E)
                 out.flush()
-                render_work_history_ms.append((time.monotonic() - t0) * 1000.0)
+                view_monitor.note_render_work(t0)
 
                 # ── Throttle ─────────────────────────────────────
                 dt = time.monotonic() - t0

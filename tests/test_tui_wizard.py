@@ -7,34 +7,33 @@ import io
 import numpy as np
 
 from rollio.collect import RuntimeSnapshot, RuntimeTimingDiagnostics, TimingTrace
-from rollio.defaults import DEFAULT_CONTROL_HZ, DEFAULT_CONTROL_INTERVAL_MS
+from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.config.schema import RobotConfig
 from rollio.episode.codecs import (
     available_depth_codec_options,
     available_rgb_codec_options,
 )
+from rollio.robot import DetectedRobot
 from rollio.sensors.scanner import DetectedDevice
 from rollio.tui import wizard
+from tests.support_tui import WizardFakeTerm as _FakeTerm
 
 
-class _FakeTerm:
-    cols = 80
-    rows = 24
-
-    def __init__(self, keys: list[str] | None = None) -> None:
-        self._keys = iter(keys or ["x"])
-
-    def __enter__(self) -> "_FakeTerm":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
-
-    def read_key_blocking(self, timeout: float = 0.05) -> str | None:
-        return next(self._keys, "x")
-
-    def read_key(self) -> str | None:
-        return next(self._keys, None)
+def _robot_device(
+    robot_type: str,
+    device_id: int | str,
+    label: str,
+    *,
+    n_dof: int,
+    properties: dict | None = None,
+) -> DetectedRobot:
+    return DetectedRobot(
+        robot_type=robot_type,
+        device_id=device_id,
+        label=label,
+        n_dof=n_dof,
+        properties={} if properties is None else dict(properties),
+    )
 
 
 def test_term_decodes_arrow_escape_sequences(monkeypatch) -> None:
@@ -195,9 +194,6 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
             self.open_called = False
             self.close_called = False
             self.return_zero_called = False
-            self.scheduler_driver = "asyncio"
-            self.telemetry_hz = DEFAULT_CONTROL_HZ
-            self.control_hz = DEFAULT_CONTROL_HZ
 
         def open(self) -> None:
             self.open_called = True
@@ -250,11 +246,9 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
 
     def fake_create_runtime_service(
         cfg,
-        use_worker=True,
         scheduler_driver="asyncio",
         preview_live_feedback=False,
     ):
-        assert use_worker is True
         created.append((cfg, scheduler_driver, preview_live_feedback))
         return preview_runtime
 
@@ -295,9 +289,6 @@ def test_screen_summary_renders_timing_panel_when_debug_enabled(monkeypatch) -> 
             self.open_called = False
             self.close_called = False
             self.return_zero_called = False
-            self.scheduler_driver = "round_robin"
-            self.telemetry_hz = DEFAULT_CONTROL_HZ
-            self.control_hz = DEFAULT_CONTROL_HZ
 
         def open(self) -> None:
             self.open_called = True
@@ -421,19 +412,19 @@ def test_match_robot_devices_distinguishes_same_can_by_type() -> None:
         ),
     ]
     devices = [
-        DetectedDevice(
-            kind="robot",
-            dtype="airbot_play",
-            device_id="can0",
-            label="AIRBOT Play (can0)",
-            properties={"can_interface": "can0", "num_joints": 6},
+        _robot_device(
+            "airbot_play",
+            "can0",
+            "AIRBOT Play (can0)",
+            n_dof=6,
+            properties={"can_interface": "can0"},
         ),
-        DetectedDevice(
-            kind="robot",
-            dtype="airbot_g2",
-            device_id="can0",
-            label="AIRBOT G2 (can0)",
-            properties={"can_interface": "can0", "num_joints": 1},
+        _robot_device(
+            "airbot_g2",
+            "can0",
+            "AIRBOT G2 (can0)",
+            n_dof=1,
+            properties={"can_interface": "can0"},
         ),
     ]
 
@@ -453,12 +444,12 @@ def test_screen_robots_persists_airbot_e2b_as_separate_entity(monkeypatch) -> No
         _FakeTerm(["\n"]),
         io.BytesIO(),
         [
-            DetectedDevice(
-                kind="robot",
-                dtype="airbot_e2b",
-                device_id="can0",
-                label="AIRBOT E2B (can0)",
-                properties={"can_interface": "can0", "num_joints": 1},
+            _robot_device(
+                "airbot_e2b",
+                "can0",
+                "AIRBOT E2B (can0)",
+                n_dof=1,
+                properties={"can_interface": "can0"},
             )
         ],
     )
@@ -515,12 +506,12 @@ def test_screen_robots_shows_airbot_play_joint_positions(monkeypatch) -> None:
         _FakeTerm(["\n"]),
         out,
         [
-            DetectedDevice(
-                kind="robot",
-                dtype="airbot_play",
-                device_id="can0",
-                label="AIRBOT Play (can0)",
-                properties={"can_interface": "can0", "num_joints": 2},
+            _robot_device(
+                "airbot_play",
+                "can0",
+                "AIRBOT Play (can0)",
+                n_dof=2,
+                properties={"can_interface": "can0"},
             )
         ],
     )
@@ -556,12 +547,12 @@ def test_screen_robots_persists_airbot_play_pvt_tracking_mode(monkeypatch) -> No
         _FakeTerm(["\n"]),
         io.BytesIO(),
         [
-            DetectedDevice(
-                kind="robot",
-                dtype="airbot_play",
-                device_id="can1",
-                label="AIRBOT Play (can1)",
-                properties={"can_interface": "can1", "num_joints": 6},
+            _robot_device(
+                "airbot_play",
+                "can1",
+                "AIRBOT Play (can1)",
+                n_dof=6,
+                properties={"can_interface": "can1"},
             )
         ],
     )
@@ -624,12 +615,12 @@ def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:
         _FakeTerm(["\n"]),
         out,
         [
-            DetectedDevice(
-                kind="robot",
-                dtype="airbot_g2",
-                device_id="can0",
-                label="AIRBOT G2 (can0)",
-                properties={"can_interface": "can0", "num_joints": 1},
+            _robot_device(
+                "airbot_g2",
+                "can0",
+                "AIRBOT G2 (can0)",
+                n_dof=1,
+                properties={"can_interface": "can0"},
             )
         ],
     )
@@ -665,12 +656,12 @@ def test_screen_robots_persists_airbot_g2_pvt_tracking_mode(monkeypatch) -> None
         _FakeTerm(["\n"]),
         io.BytesIO(),
         [
-            DetectedDevice(
-                kind="robot",
-                dtype="airbot_g2",
-                device_id="can1",
-                label="AIRBOT G2 (can1)",
-                properties={"can_interface": "can1", "num_joints": 1},
+            _robot_device(
+                "airbot_g2",
+                "can1",
+                "AIRBOT G2 (can1)",
+                n_dof=1,
+                properties={"can_interface": "can1"},
             )
         ],
     )
@@ -787,7 +778,7 @@ def test_run_wizard_aborts_when_camera_screen_cancels(monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(wizard, "scan_cameras", lambda *args, **kwargs: [])
-    monkeypatch.setattr(wizard, "scan_robots", lambda *args, **kwargs: [])
+    monkeypatch.setattr(wizard, "scan_robot_devices", lambda *args, **kwargs: [])
     monkeypatch.setattr(wizard.time, "sleep", lambda *args, **kwargs: None)
     monkeypatch.setattr(wizard, "_Term", _FakeTerm)
     monkeypatch.setattr(wizard.sys, "stdout", _FakeStdout())
