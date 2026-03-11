@@ -28,7 +28,12 @@ class CollectionRuntimeService(Protocol):
 
     def close(self) -> None: ...
 
-    def snapshot(self) -> RuntimeSnapshot: ...
+    def snapshot(
+        self,
+        *,
+        max_frame_width: int | None = None,
+        max_frame_height: int | None = None,
+    ) -> RuntimeSnapshot: ...
 
     def start_episode(self) -> int: ...
 
@@ -96,7 +101,10 @@ def _handle_worker_request(
     payload = dict(request.payload)
 
     if command == "snapshot":
-        return runtime.snapshot()
+        return runtime.snapshot(
+            max_frame_width=payload.get("max_frame_width"),
+            max_frame_height=payload.get("max_frame_height"),
+        )
     if command == "start_episode":
         return runtime.start_episode()
     if command == "stop_episode":
@@ -249,8 +257,17 @@ class WorkerCollectionRuntimeService:
             pass
         self._cleanup_process()
 
-    def snapshot(self) -> RuntimeSnapshot:
-        result = self._request("snapshot")
+    def snapshot(
+        self,
+        *,
+        max_frame_width: int | None = None,
+        max_frame_height: int | None = None,
+    ) -> RuntimeSnapshot:
+        result = self._request(
+            "snapshot",
+            max_frame_width=max_frame_width,
+            max_frame_height=max_frame_height,
+        )
         if not isinstance(result, RuntimeSnapshot):
             raise TypeError("Runtime worker returned an invalid snapshot payload.")
         return result

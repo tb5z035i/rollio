@@ -33,6 +33,7 @@ def build_timing_panel_lines(
     diagnostics: RuntimeTimingDiagnostics | None,
     render_gap_trace: TimingTrace | None = None,
     render_work_trace: TimingTrace | None = None,
+    extra_traces: Sequence[tuple[str, TimingTrace]] = (),
 ) -> list[str]:
     """Render a compact numeric panel plus interval timelines."""
     width = max(panel_w, 16)
@@ -42,6 +43,7 @@ def build_timing_panel_lines(
     traces: list[tuple[str, TimingTrace]] = []
     if render_gap_trace is not None:
         traces.append(("render_gap", render_gap_trace))
+    traces.extend((str(label), trace) for label, trace in extra_traces)
     if diagnostics is not None:
         traces.append(("sched", diagnostics.scheduler_loop))
         traces.extend(

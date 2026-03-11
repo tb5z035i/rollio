@@ -351,5 +351,6 @@ def test_run_collection_renders_timing_panel_when_debug_enabled(monkeypatch) -> 
     rendered = _run_collection_once(monkeypatch, fake_runtime, ["\\", "q"], cfg)
 
     assert "TIMING" in rendered
+    assert "snapshot" in rendered
     assert "sched" in rendered
     assert "leader_arm" in rendered

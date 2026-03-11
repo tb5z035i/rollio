@@ -14,7 +14,26 @@ cameras:
   id_path: pci-0000:f1:00.4-usb-0:2:1.0
   channel: color
   options: {}
-  channels: []
+- name: cam_2
+  type: realsense
+  device: '335522070371'
+  width: 1280
+  height: 720
+  fps: 30
+  pixel_format: z16
+  id_path: ''
+  channel: depth
+  options: {}
+- name: cam_3
+  type: realsense
+  device: '335522070371'
+  width: 1920
+  height: 1080
+  fps: 30
+  pixel_format: bgr8
+  id_path: ''
+  channel: color
+  options: {}
 robots:
 - name: arm_0
   type: airbot_play
@@ -77,6 +96,7 @@ async_pipeline:
   control_hz: 1000
   max_pending_episodes: 8
   allow_drop_preview_frames: true
+  worker_bootstrap: []
 controls:
   start_stop: ' '
   keep: k

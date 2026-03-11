@@ -826,6 +826,72 @@ def test_preview_live_feedback_does_not_duplicate_refresh_for_paired_leader() ->
     assert leader.read_joint_state_calls == read_count
 
 
+def test_collection_reuses_cached_refresh_for_paired_leader() -> None:
+    leader = _PreviewSensitiveEEFRobot("leader_e2b", "airbot_e2b")
+    follower = _PreviewSensitiveEEFRobot("follower_g2", "airbot_g2")
+    assert leader.open() is None
+    assert follower.open() is None
+    assert leader.enable() is True
+    assert follower.enable() is True
+    assert leader.enter_free_drive() is True
+    assert follower.enter_target_tracking() is True
+
+    class _FakeRuntime:
+        def __init__(self) -> None:
+            self._preview_live_feedback = False
+            self._teleop_leader_names = {leader.info.name}
+            self._cached: dict[str, tuple[float, dict[str, np.ndarray]]] = {}
+
+        def cache_robot_state_sample(
+            self,
+            name: str,
+            timestamp: float,
+            state: dict[str, np.ndarray],
+            **_kwargs,
+        ) -> None:
+            self._cached[name] = (timestamp, dict(state))
+
+        def cached_robot_state(
+            self,
+            name: str,
+            *,
+            max_age_ms: float | None = None,
+        ) -> tuple[float, dict[str, np.ndarray]] | None:
+            del max_age_ms
+            return self._cached.get(name)
+
+        def update_latest_robot_state(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        def record_robot_state(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        def update_pair_mode(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        def record_pair_action(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+    runtime = _FakeRuntime()
+    pair = TeleopPairBinding(
+        name="eef_pair",
+        leader_name=leader.info.name,
+        follower_name=follower.info.name,
+        leader=leader,
+        follower=follower,
+        mapper_mode="joint_direct",
+    )
+    teleop_task = TeleopTask(pair, 40, runtime)
+    telemetry_task = RobotTelemetryTask(leader.info.name, leader, 40, runtime)
+
+    teleop_task.step()
+    reads_after_teleop = leader.read_joint_state_calls
+    telemetry_task.step()
+
+    assert reads_after_teleop > 0
+    assert leader.read_joint_state_calls == reads_after_teleop
+
+
 def test_scheduler_metrics_are_exposed_for_asyncio_driver(tmp_path: Path) -> None:
     runtime = _build_runtime(
         tmp_path,
@@ -844,6 +910,7 @@ def test_scheduler_metrics_are_exposed_for_asyncio_driver(tmp_path: Path) -> Non
         metrics = runtime.scheduler_metrics()
         driver_metrics = metrics["driver"]
         camera_metrics = metrics["cameras"]
+        camera_task_metrics = metrics["camera_tasks"]
 
         assert driver_metrics.driver_name == "asyncio"
         assert driver_metrics.loop_run_count > 0
@@ -854,6 +921,9 @@ def test_scheduler_metrics_are_exposed_for_asyncio_driver(tmp_path: Path) -> Non
         assert driver_metrics.task_metrics["robot-leader_a"].run_count > 0
         assert driver_metrics.task_metrics["camera-cam_left"].run_count > 0
         assert camera_metrics["cam_left"].captured_frames > 0
+        assert camera_task_metrics["cam_left"].run_count > 0
+        assert camera_task_metrics["cam_left"].last_recorded_samples == 0
+        assert camera_task_metrics["cam_left"].last_copied_bytes == 0
     finally:
         driver_stop.set()
         runtime.close()
@@ -877,6 +947,7 @@ def test_scheduler_metrics_are_exposed_for_round_robin_driver(tmp_path: Path) ->
         metrics = runtime.scheduler_metrics()
         driver_metrics = metrics["driver"]
         camera_metrics = metrics["cameras"]
+        camera_task_metrics = metrics["camera_tasks"]
 
         assert driver_metrics.driver_name == "round_robin"
         assert driver_metrics.loop_run_count > 0
@@ -887,6 +958,9 @@ def test_scheduler_metrics_are_exposed_for_round_robin_driver(tmp_path: Path) ->
         assert driver_metrics.task_metrics["robot-leader_a"].run_count > 0
         assert driver_metrics.task_metrics["camera-cam_left"].run_count > 0
         assert camera_metrics["cam_left"].captured_frames > 0
+        assert camera_task_metrics["cam_left"].run_count > 0
+        assert camera_task_metrics["cam_left"].last_recorded_samples == 0
+        assert camera_task_metrics["cam_left"].last_copied_bytes == 0
     finally:
         driver_stop.set()
         runtime.close()

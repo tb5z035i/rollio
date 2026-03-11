@@ -41,7 +41,15 @@ class RuntimeViewMonitor:
         self.render_loop_count = 0
         self.render_last_loop_us = 0.0
         self.render_avg_loop_us = 0.0
+        self.snapshot_poll_count = 0
+        self.snapshot_last_loop_us = 0.0
+        self.snapshot_avg_loop_us = 0.0
+        self.snapshot_max_loop_us = 0.0
+        self.snapshot_payload_last_bytes = 0
+        self.snapshot_payload_avg_bytes = 0.0
+        self.snapshot_payload_max_bytes = 0
         self.render_gap_history_ms: deque[float] = deque(maxlen=self._history_limit)
+        self.snapshot_poll_history_ms: deque[float] = deque(maxlen=self._history_limit)
         self.render_work_history_ms: deque[float] = deque(maxlen=self._history_limit)
         self.reset()
 
@@ -53,7 +61,15 @@ class RuntimeViewMonitor:
         self.render_loop_count = 0
         self.render_last_loop_us = 0.0
         self.render_avg_loop_us = 0.0
+        self.snapshot_poll_count = 0
+        self.snapshot_last_loop_us = 0.0
+        self.snapshot_avg_loop_us = 0.0
+        self.snapshot_max_loop_us = 0.0
+        self.snapshot_payload_last_bytes = 0
+        self.snapshot_payload_avg_bytes = 0.0
+        self.snapshot_payload_max_bytes = 0
         self.render_gap_history_ms.clear()
+        self.snapshot_poll_history_ms.clear()
         self.render_work_history_ms.clear()
 
     def mark_runtime_started(self, started_at: float | None = None) -> None:
@@ -66,6 +82,9 @@ class RuntimeViewMonitor:
     def poll_snapshot(
         self,
         runtime: CollectionRuntimeService,
+        *,
+        max_frame_width: int | None = None,
+        max_frame_height: int | None = None,
     ) -> tuple[float, RuntimeSnapshot]:
         frame_started_at = time.monotonic()
         frame_dt = frame_started_at - self._prev_frame_started_at
@@ -73,10 +92,29 @@ class RuntimeViewMonitor:
         if frame_dt > 0:
             self.actual_fps = 0.9 * self.actual_fps + 0.1 / frame_dt
             self.render_gap_history_ms.append(frame_dt * 1000.0)
-        return frame_started_at, runtime.snapshot()
+        snapshot_started_at = time.monotonic()
+        try:
+            snapshot = runtime.snapshot(
+                max_frame_width=max_frame_width,
+                max_frame_height=max_frame_height,
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            snapshot = runtime.snapshot()
+        snapshot_elapsed_us = max(
+            0.0,
+            (time.monotonic() - snapshot_started_at) * 1_000_000.0,
+        )
+        self._observe_snapshot_poll(
+            snapshot_elapsed_us,
+            self._snapshot_payload_bytes(snapshot),
+        )
+        return frame_started_at, snapshot
 
     def note_render_work(self, frame_started_at: float) -> None:
-        elapsed_us = max(0.0, (time.monotonic() - frame_started_at) * 1_000_000.0)
+        total_elapsed_us = max(0.0, (time.monotonic() - frame_started_at) * 1_000_000.0)
+        elapsed_us = max(0.0, total_elapsed_us - self.snapshot_last_loop_us)
         self.render_work_history_ms.append(elapsed_us / 1000.0)
         self.render_loop_count += 1
         self.render_last_loop_us = elapsed_us
@@ -97,9 +135,9 @@ class RuntimeViewMonitor:
         target_render_ms: float,
     ) -> list[str]:
         diagnostics = snapshot.timing_diagnostics if snapshot is not None else None
-        return build_timing_panel_lines(
+        timing_lines = build_timing_panel_lines(
             panel_w=panel_w,
-            panel_h=panel_h,
+            panel_h=max(panel_h - 1, 1),
             diagnostics=diagnostics,
             render_gap_trace=make_timing_trace(
                 tuple(self.render_gap_history_ms),
@@ -111,6 +149,12 @@ class RuntimeViewMonitor:
                 target_interval_ms=target_render_ms,
             ),
         )
+        summary_line = self._build_payload_summary_line(snapshot, panel_w)
+        if not summary_line:
+            return timing_lines
+        return ([timing_lines[0], summary_line, *timing_lines[1:]] + [""] * panel_h)[
+            :panel_h
+        ]
 
     def summarize_driver(
         self, snapshot: RuntimeSnapshot | None
@@ -158,3 +202,77 @@ class RuntimeViewMonitor:
             overruns=overruns,
             avg_step_ms=avg_step_ms,
         )
+
+    def _observe_snapshot_poll(
+        self,
+        elapsed_us: float,
+        payload_bytes: int,
+    ) -> None:
+        self.snapshot_poll_count += 1
+        self.snapshot_poll_history_ms.append(elapsed_us / 1000.0)
+        self.snapshot_last_loop_us = elapsed_us
+        self.snapshot_max_loop_us = max(self.snapshot_max_loop_us, elapsed_us)
+        self.snapshot_payload_last_bytes = max(int(payload_bytes), 0)
+        self.snapshot_payload_max_bytes = max(
+            self.snapshot_payload_max_bytes,
+            self.snapshot_payload_last_bytes,
+        )
+        if self.snapshot_poll_count == 1:
+            self.snapshot_avg_loop_us = elapsed_us
+            self.snapshot_payload_avg_bytes = float(self.snapshot_payload_last_bytes)
+            return
+        prev = self.snapshot_poll_count - 1
+        self.snapshot_avg_loop_us = (
+            (self.snapshot_avg_loop_us * prev) + elapsed_us
+        ) / self.snapshot_poll_count
+        self.snapshot_payload_avg_bytes = (
+            (self.snapshot_payload_avg_bytes * prev) + self.snapshot_payload_last_bytes
+        ) / self.snapshot_poll_count
+
+    def _snapshot_payload_bytes(self, snapshot: RuntimeSnapshot) -> int:
+        frame_bytes = sum(
+            int(getattr(frame, "nbytes", 0))
+            for frame in snapshot.latest_frames.values()
+            if frame is not None
+        )
+        state_bytes = sum(
+            int(getattr(value, "nbytes", 0))
+            for state in snapshot.latest_robot_states.values()
+            for value in state.values()
+        )
+        return frame_bytes + state_bytes
+
+    def _build_payload_summary_line(
+        self,
+        snapshot: RuntimeSnapshot | None,
+        width: int,
+    ) -> str:
+        if self.snapshot_last_loop_us <= 0.0 and snapshot is None:
+            return ""
+        summary = (
+            f"snapshot {self.snapshot_last_loop_us / 1000.0:0.1f}ms"
+            f" avg {self.snapshot_avg_loop_us / 1000.0:0.1f}ms"
+            f" | payload {self.snapshot_payload_last_bytes / (1024 * 1024):0.2f}MB"
+            f" avg {self.snapshot_payload_avg_bytes / (1024 * 1024):0.2f}MB"
+        )
+        camera_tasks = (
+            snapshot.scheduler_metrics.get("camera_tasks")
+            if snapshot is not None
+            else None
+        )
+        if isinstance(camera_tasks, dict) and camera_tasks:
+            worst_name, worst_metric = max(
+                camera_tasks.items(),
+                key=lambda item: (
+                    getattr(item[1], "last_backlog", 0),
+                    getattr(item[1], "last_step_ms", 0.0),
+                    getattr(item[1], "last_copied_bytes", 0),
+                ),
+            )
+            summary += (
+                f" | cam {str(worst_name)[:8]}"
+                f" s{getattr(worst_metric, 'last_step_ms', 0.0):0.1f}ms"
+                f" q{getattr(worst_metric, 'last_backlog', 0)}"
+                f" c{getattr(worst_metric, 'last_copied_bytes', 0) / (1024 * 1024):0.2f}MB"
+            )
+        return summary[: max(width, 1)]

@@ -355,7 +355,18 @@ def run_collection(cfg: RollioConfig) -> None:
             out = sys.stdout.buffer
             target_dt = 1.0 / max(cfg.fps, 1)
             while True:
-                t0, snapshot = view_monitor.poll_snapshot(runtime)
+                W, H = term.cols, term.rows
+                status_h = 2
+                side_w = (
+                    max(32, min(48, W // 3)) if show_debug else max(26, min(36, W // 4))
+                )
+                left_w = max(20, W - side_w)
+                body_h = max(2, H - status_h)
+                t0, snapshot = view_monitor.poll_snapshot(
+                    runtime,
+                    max_frame_width=left_w,
+                    max_frame_height=body_h * 2,
+                )
                 render_mode = RENDER_MODES[mode_idx]
 
                 # ── Input ────────────────────────────────────────
@@ -396,13 +407,6 @@ def run_collection(cfg: RollioConfig) -> None:
                 robot_display = snapshot.latest_robot_states
 
                 # ── Layout ───────────────────────────────────────
-                W, H = term.cols, term.rows
-                status_h = 2
-                side_w = (
-                    max(32, min(48, W // 3)) if show_debug else max(26, min(36, W // 4))
-                )
-                left_w = max(20, W - side_w)
-                body_h = max(2, H - status_h)
                 robot_h = (
                     min(
                         max(6, _estimate_robot_panel_height(robot_display)),

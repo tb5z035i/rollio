@@ -15,7 +15,6 @@ import termios
 import threading
 import time
 import tty
-from collections import deque
 
 import numpy as np
 
@@ -1861,9 +1860,15 @@ def _screen_summary(
                 _needs_restart = False
 
             W, H = term.cols, term.rows
+            info_w = max(40, W // 3)
+            preview_w = W - info_w - 2
             buf = io.BytesIO()
             if preview_runtime is not None:
-                loop_started_at, snapshot = view_monitor.poll_snapshot(preview_runtime)
+                loop_started_at, snapshot = view_monitor.poll_snapshot(
+                    preview_runtime,
+                    max_frame_width=max(preview_w - 2, 1),
+                    max_frame_height=max((H - 6) * 2, 2),
+                )
             else:
                 loop_started_at = time.monotonic()
                 snapshot = None
@@ -1876,9 +1881,6 @@ def _screen_summary(
             _draw_header(buf, W, step, total_steps, "Summary — Live Preview")
 
             # ── Layout: left panel (info), right panel (live previews) ──
-            info_w = max(40, W // 3)
-            preview_w = W - info_w - 2
-
             # ── Left panel: configuration info ──
             row = 3
             box_line = "─" * (info_w - 4)

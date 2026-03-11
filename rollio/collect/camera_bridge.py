@@ -27,6 +27,8 @@ class FrameSourceMetrics:
     captured_frames: int = 0
     dropped_frames: int = 0
     last_capture_timestamp: float | None = None
+    pending_frames: int = 0
+    last_capture_bytes: int = 0
 
 
 class ThreadedCameraFrameSource:
@@ -53,6 +55,7 @@ class ThreadedCameraFrameSource:
         self._captured_frames = 0
         self._dropped_frames = 0
         self._last_capture_timestamp: float | None = None
+        self._last_capture_bytes = 0
         self._stop_event = threading.Event()
         self._ready_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -103,12 +106,21 @@ class ThreadedCameraFrameSource:
             self._pending.clear()
         return samples
 
+    def take_latest(self) -> tuple[FrameSample | None, int]:
+        with self._lock:
+            latest = self._pending[-1] if self._pending else None
+            backlog = len(self._pending)
+            self._pending.clear()
+        return latest, backlog
+
     def metrics(self) -> FrameSourceMetrics:
         with self._lock:
             return FrameSourceMetrics(
                 captured_frames=self._captured_frames,
                 dropped_frames=self._dropped_frames,
                 last_capture_timestamp=self._last_capture_timestamp,
+                pending_frames=len(self._pending),
+                last_capture_bytes=self._last_capture_bytes,
             )
 
     def _run(self) -> None:
@@ -132,6 +144,7 @@ class ThreadedCameraFrameSource:
                     self._latest = sample
                     self._captured_frames += 1
                     self._last_capture_timestamp = ts
+                    self._last_capture_bytes = int(getattr(frame, "nbytes", 0))
 
                 next_tick += self._interval_sec
                 remaining = next_tick - time.monotonic()

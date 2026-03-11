@@ -20,7 +20,7 @@ from rollio.episode.writer import LeRobotV21Writer
 from rollio.robot import ControlMode, JointState, RobotArm
 from rollio.sensors import ImageSensor
 
-from .camera_bridge import FrameSourceMetrics, ThreadedCameraFrameSource
+from .camera_bridge import FrameSample, FrameSourceMetrics, ThreadedCameraFrameSource
 from .devices import build_cameras_from_config, build_robots_from_config
 from .scheduler import DriverMetrics, ScheduledTask, build_scheduler_driver
 from .teleop import (
@@ -97,6 +97,25 @@ class RuntimeTimingDiagnostics:
 
 
 @dataclass(frozen=True)
+class CameraIngestMetrics:
+    """Observed execution and copy metrics for one camera ingest task."""
+
+    run_count: int = 0
+    last_step_ms: float = 0.0
+    avg_step_ms: float = 0.0
+    max_step_ms: float = 0.0
+    last_backlog: int = 0
+    avg_backlog: float = 0.0
+    max_backlog: int = 0
+    last_recorded_samples: int = 0
+    avg_recorded_samples: float = 0.0
+    max_recorded_samples: int = 0
+    last_copied_bytes: int = 0
+    avg_copied_bytes: float = 0.0
+    max_copied_bytes: int = 0
+
+
+@dataclass(frozen=True)
 class RuntimeSnapshot:
     """Serializable snapshot for UI and other runtime clients."""
 
@@ -107,9 +126,10 @@ class RuntimeSnapshot:
     latest_pair_modes: dict[str, str] = field(default_factory=dict)
     action_layout: list[dict[str, int | str]] = field(default_factory=list)
     export_status: tuple[int, int] = (0, 0)
-    scheduler_metrics: dict[str, DriverMetrics | dict[str, FrameSourceMetrics]] = field(
-        default_factory=dict
-    )
+    scheduler_metrics: dict[
+        str,
+        DriverMetrics | dict[str, FrameSourceMetrics] | dict[str, CameraIngestMetrics],
+    ] = field(default_factory=dict)
     timing_diagnostics: RuntimeTimingDiagnostics = field(
         default_factory=RuntimeTimingDiagnostics
     )
@@ -166,11 +186,138 @@ class _TimingHistory:
         )
 
 
+@dataclass
+class _MutableCameraIngestMetrics:
+    run_count: int = 0
+    last_step_ms: float = 0.0
+    avg_step_ms: float = 0.0
+    max_step_ms: float = 0.0
+    last_backlog: int = 0
+    avg_backlog: float = 0.0
+    max_backlog: int = 0
+    last_recorded_samples: int = 0
+    avg_recorded_samples: float = 0.0
+    max_recorded_samples: int = 0
+    last_copied_bytes: int = 0
+    avg_copied_bytes: float = 0.0
+    max_copied_bytes: int = 0
+
+    def observe(
+        self,
+        *,
+        step_ms: float,
+        backlog: int,
+        recorded_samples: int,
+        copied_bytes: int,
+    ) -> None:
+        self.run_count += 1
+        self.last_step_ms = float(step_ms)
+        self.max_step_ms = max(self.max_step_ms, self.last_step_ms)
+        if self.run_count == 1:
+            self.avg_step_ms = self.last_step_ms
+        else:
+            prev = self.run_count - 1
+            self.avg_step_ms = ((self.avg_step_ms * prev) + self.last_step_ms) / self.run_count
+
+        self.last_backlog = max(int(backlog), 0)
+        self.max_backlog = max(self.max_backlog, self.last_backlog)
+        if self.run_count == 1:
+            self.avg_backlog = float(self.last_backlog)
+        else:
+            prev = self.run_count - 1
+            self.avg_backlog = ((self.avg_backlog * prev) + self.last_backlog) / self.run_count
+
+        self.last_recorded_samples = max(int(recorded_samples), 0)
+        self.max_recorded_samples = max(
+            self.max_recorded_samples,
+            self.last_recorded_samples,
+        )
+        if self.run_count == 1:
+            self.avg_recorded_samples = float(self.last_recorded_samples)
+        else:
+            prev = self.run_count - 1
+            self.avg_recorded_samples = (
+                (self.avg_recorded_samples * prev) + self.last_recorded_samples
+            ) / self.run_count
+
+        self.last_copied_bytes = max(int(copied_bytes), 0)
+        self.max_copied_bytes = max(self.max_copied_bytes, self.last_copied_bytes)
+        if self.run_count == 1:
+            self.avg_copied_bytes = float(self.last_copied_bytes)
+        else:
+            prev = self.run_count - 1
+            self.avg_copied_bytes = (
+                (self.avg_copied_bytes * prev) + self.last_copied_bytes
+            ) / self.run_count
+
+    def freeze(self) -> CameraIngestMetrics:
+        return CameraIngestMetrics(
+            run_count=self.run_count,
+            last_step_ms=self.last_step_ms,
+            avg_step_ms=self.avg_step_ms,
+            max_step_ms=self.max_step_ms,
+            last_backlog=self.last_backlog,
+            avg_backlog=self.avg_backlog,
+            max_backlog=self.max_backlog,
+            last_recorded_samples=self.last_recorded_samples,
+            avg_recorded_samples=self.avg_recorded_samples,
+            max_recorded_samples=self.max_recorded_samples,
+            last_copied_bytes=self.last_copied_bytes,
+            avg_copied_bytes=self.avg_copied_bytes,
+            max_copied_bytes=self.max_copied_bytes,
+        )
+
+
 def _target_interval_ms(rate_hz: int) -> float | None:
     hz = max(int(rate_hz), 0)
     if hz <= 0:
         return None
     return 1000.0 / float(hz)
+
+
+def _copy_state_arrays(state: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    return {key: np.asarray(value).copy() for key, value in state.items()}
+
+
+def _frame_nbytes(frame: np.ndarray | None) -> int:
+    return int(frame.nbytes) if frame is not None else 0
+
+
+def _resize_frame_for_snapshot(
+    frame: np.ndarray,
+    *,
+    max_frame_width: int | None,
+    max_frame_height: int | None,
+) -> np.ndarray:
+    if max_frame_width is None and max_frame_height is None:
+        return frame
+    if frame.ndim < 2:
+        return frame
+
+    height, width = frame.shape[:2]
+    width_limit = width if max_frame_width is None else max(1, int(max_frame_width))
+    height_limit = (
+        height if max_frame_height is None else max(1, int(max_frame_height))
+    )
+    scale = min(
+        1.0,
+        width_limit / max(width, 1),
+        height_limit / max(height, 1),
+    )
+    if scale >= 0.999:
+        return frame
+
+    import cv2
+
+    resized_width = max(1, int(round(width * scale)))
+    resized_height = max(1, int(round(height * scale)))
+    if resized_width == width and resized_height == height:
+        return frame
+    return cv2.resize(
+        frame,
+        (resized_width, resized_height),
+        interpolation=cv2.INTER_AREA,
+    )
 
 
 def _observe_runtime_hook(runtime: object, name: str, *args: object) -> None:
@@ -194,6 +341,12 @@ class TeleopPairBinding:
 
     def mapper(self) -> TeleopMapper:
         return build_mapper(self.mapper_mode)
+
+
+@dataclass(frozen=True)
+class _CachedRobotState:
+    timestamp: float
+    state: dict[str, np.ndarray]
 
 
 class EpisodeAccumulator:
@@ -232,11 +385,31 @@ class EpisodeAccumulator:
         with self._lock:
             self._camera_frames[name].append((rel_ts, frame.copy()))
 
+    def append_camera_batch(
+        self,
+        name: str,
+        samples: list[tuple[float, np.ndarray]],
+    ) -> tuple[int, int]:
+        captured: list[tuple[float, np.ndarray]] = []
+        copied_bytes = 0
+        for ts, frame in samples:
+            rel_ts = ts - self._started_at
+            if rel_ts < 0:
+                continue
+            frame_copy = np.asarray(frame).copy()
+            copied_bytes += _frame_nbytes(frame_copy)
+            captured.append((rel_ts, frame_copy))
+        if not captured:
+            return 0, 0
+        with self._lock:
+            self._camera_frames[name].extend(captured)
+        return len(captured), copied_bytes
+
     def append_robot(self, name: str, ts: float, state: dict[str, np.ndarray]) -> None:
         rel_ts = ts - self._started_at
         if rel_ts < 0:
             return
-        safe_state = {key: np.asarray(value).copy() for key, value in state.items()}
+        safe_state = _copy_state_arrays(state)
         with self._lock:
             self._robot_states[name].append((rel_ts, safe_state))
 
@@ -584,18 +757,19 @@ def _joint_state_to_robot_state(
 ) -> dict[str, np.ndarray]:
     robot_state: dict[str, np.ndarray] = {}
     if joint_state.position is not None:
-        robot_state["position"] = joint_state.position
+        position = np.asarray(joint_state.position).copy()
+        robot_state["position"] = position
         try:
-            pose = robot.kinematics.forward_kinematics(joint_state.position)
+            pose = robot.kinematics.forward_kinematics(position)
         except (OSError, RuntimeError, ValueError, TypeError, AttributeError, KeyError):
             pose = None
         if pose is not None:
             robot_state["ee_position"] = pose.position.astype(np.float32)
             robot_state["ee_quaternion"] = pose.quaternion.astype(np.float32)
     if joint_state.velocity is not None:
-        robot_state["velocity"] = joint_state.velocity
+        robot_state["velocity"] = np.asarray(joint_state.velocity).copy()
     if joint_state.effort is not None:
-        robot_state["effort"] = joint_state.effort
+        robot_state["effort"] = np.asarray(joint_state.effort).copy()
     control_loop_metrics = getattr(robot, "control_loop_metrics", None)
     if callable(control_loop_metrics):
         try:
@@ -694,17 +868,37 @@ class CameraIngestTask:
         )
 
     def step(self) -> None:
+        step_started_at = time.monotonic()
+        if not self._runtime.recording:
+            latest, backlog = self._frame_source.take_latest()
+            if latest is None:
+                return
+            self._runtime.update_latest_frame(self._camera_name, latest.frame)
+            self._runtime.observe_camera_ingest(
+                self._camera_name,
+                step_ms=(time.monotonic() - step_started_at) * 1000.0,
+                backlog=backlog,
+                recorded_samples=0,
+                copied_bytes=0,
+            )
+            return
+
         samples = self._frame_source.drain_samples()
         if not samples:
             return
         latest = samples[-1]
         self._runtime.update_latest_frame(self._camera_name, latest.frame)
-        for sample in samples:
-            self._runtime.record_camera_frame(
-                self._camera_name,
-                sample.timestamp,
-                sample.frame,
-            )
+        recorded_samples, copied_bytes = self._runtime.record_camera_samples(
+            self._camera_name,
+            samples,
+        )
+        self._runtime.observe_camera_ingest(
+            self._camera_name,
+            step_ms=(time.monotonic() - step_started_at) * 1000.0,
+            backlog=len(samples),
+            recorded_samples=recorded_samples,
+            copied_bytes=copied_bytes,
+        )
 
 
 class RobotTelemetryTask:
@@ -748,6 +942,30 @@ class RobotTelemetryTask:
             not in self._runtime._teleop_leader_names  # noqa: SLF001
         ):
             self._robot.step_free_drive()
+        cached_state = None
+        if self._robot_name in self._runtime._teleop_leader_names:  # noqa: SLF001
+            cached_robot_state = getattr(self._runtime, "cached_robot_state", None)
+            if callable(cached_robot_state):
+                cached_state = cached_robot_state(
+                    self._robot_name,
+                    max_age_ms=self._interval_sec * 2000.0,
+                )
+        if cached_state is not None:
+            timestamp, robot_state = cached_state
+            try:
+                self._runtime.update_latest_robot_state(
+                    self._robot_name,
+                    robot_state,
+                    copy_arrays=False,
+                )
+            except TypeError:
+                self._runtime.update_latest_robot_state(self._robot_name, robot_state)
+            self._runtime.record_robot_state(
+                self._robot_name,
+                timestamp,
+                robot_state,
+            )
+            return
         joint_state = self._robot.read_joint_state()
         if joint_state.is_valid and joint_state.position is not None:
             _observe_runtime_hook(
@@ -772,7 +990,14 @@ class RobotTelemetryTask:
                 add_gravity_compensation=False,
             )
         robot_state = _joint_state_to_robot_state(self._robot, joint_state)
-        self._runtime.update_latest_robot_state(self._robot_name, robot_state)
+        try:
+            self._runtime.update_latest_robot_state(
+                self._robot_name,
+                robot_state,
+                copy_arrays=False,
+            )
+        except TypeError:
+            self._runtime.update_latest_robot_state(self._robot_name, robot_state)
         self._runtime.record_robot_state(
             self._robot_name,
             joint_state.timestamp,
@@ -817,24 +1042,39 @@ class TeleopTask:
             and command.leader_joint_state.is_valid
             and command.leader_joint_state.position is not None
         ):
+            leader_state = _joint_state_to_robot_state(
+                self._pair.leader,
+                command.leader_joint_state,
+            )
             _observe_runtime_hook(
                 self._runtime,
                 "observe_valid_robot_sample",
                 self._pair.leader_name,
                 command.leader_joint_state.timestamp,
             )
-        if (
-            self._runtime._preview_live_feedback  # noqa: SLF001
-            and command.leader_joint_state is not None
-        ):
-            leader_state = _joint_state_to_robot_state(
-                self._pair.leader,
-                command.leader_joint_state,
+            cache_robot_state_sample = getattr(
+                self._runtime,
+                "cache_robot_state_sample",
+                None,
             )
-            self._runtime.update_latest_robot_state(
-                self._pair.leader_name,
-                leader_state,
-            )
+            if callable(cache_robot_state_sample):
+                cache_robot_state_sample(
+                    self._pair.leader_name,
+                    command.leader_joint_state.timestamp,
+                    leader_state,
+                )
+            if self._runtime._preview_live_feedback:  # noqa: SLF001
+                try:
+                    self._runtime.update_latest_robot_state(
+                        self._pair.leader_name,
+                        leader_state,
+                        copy_arrays=False,
+                    )
+                except TypeError:
+                    self._runtime.update_latest_robot_state(
+                        self._pair.leader_name,
+                        leader_state,
+                    )
         if command.position_target is None or command.velocity_target is None:
             self._runtime.update_pair_mode(self._pair.name, command.mode)
             return
@@ -910,7 +1150,11 @@ class AsyncCollectionRuntime:
         self._control_run_history = _TimingHistory()
         self._telemetry_run_history = _TimingHistory()
         self._valid_robot_sample_histories = {name: _TimingHistory() for name in robots}
+        self._camera_task_metrics: dict[str, _MutableCameraIngestMetrics] = {
+            name: _MutableCameraIngestMetrics() for name in cameras
+        }
         self._preview_keepalive_names: set[str] = set()
+        self._cached_robot_states: dict[str, _CachedRobotState] = {}
         self._frame_sources: dict[str, ThreadedCameraFrameSource] = {}
         self._scheduler = None
         self._opened = False
@@ -1002,6 +1246,8 @@ class AsyncCollectionRuntime:
             return
 
         self._reset_timing_histories()
+        with self._state_lock:
+            self._cached_robot_states.clear()
         for robot in self._robots.values():
             robot.open()
             robot.enable()
@@ -1059,6 +1305,8 @@ class AsyncCollectionRuntime:
             robot.close()
 
         self._preview_keepalive_names.clear()
+        with self._state_lock:
+            self._cached_robot_states.clear()
         self._opened = False
 
     def return_robots_to_zero(self, timeout: float = 10.0) -> dict[str, bool]:
@@ -1108,12 +1356,10 @@ class AsyncCollectionRuntime:
                 action_layout=self._action_layout,
             )
             latest_frames = {
-                name: frame.copy() if frame is not None else None
-                for name, frame in self._latest_frames.items()
+                name: frame for name, frame in self._latest_frames.items()
             }
             latest_robot_states = {
-                name: {key: np.asarray(value).copy() for key, value in state.items()}
-                for name, state in self._latest_robot_states.items()
+                name: dict(state) for name, state in self._latest_robot_states.items()
             }
             self._current_episode = episode
             self._episode_index += 1
@@ -1200,21 +1446,33 @@ class AsyncCollectionRuntime:
 
     def scheduler_metrics(
         self,
-    ) -> dict[str, DriverMetrics | dict[str, FrameSourceMetrics]]:
+    ) -> dict[
+        str,
+        DriverMetrics | dict[str, FrameSourceMetrics] | dict[str, CameraIngestMetrics],
+    ]:
         driver_metrics = self._driver_metrics_snapshot()
         return self._scheduler_metrics_from_driver(driver_metrics)
 
     def _scheduler_metrics_from_driver(
         self,
         driver_metrics: DriverMetrics,
-    ) -> dict[str, DriverMetrics | dict[str, FrameSourceMetrics]]:
+    ) -> dict[
+        str,
+        DriverMetrics | dict[str, FrameSourceMetrics] | dict[str, CameraIngestMetrics],
+    ]:
         camera_metrics = {
             name: frame_source.metrics()
             for name, frame_source in self._frame_sources.items()
         }
+        with self._timing_lock:
+            camera_task_metrics = {
+                name: metrics.freeze()
+                for name, metrics in self._camera_task_metrics.items()
+            }
         return {
             "driver": driver_metrics,
             "cameras": camera_metrics,
+            "camera_tasks": camera_task_metrics,
         }
 
     def timing_diagnostics(self) -> RuntimeTimingDiagnostics:
@@ -1268,7 +1526,12 @@ class AsyncCollectionRuntime:
             valid_robot_samples=valid_robot_samples,
         )
 
-    def snapshot(self) -> RuntimeSnapshot:
+    def snapshot(
+        self,
+        *,
+        max_frame_width: int | None = None,
+        max_frame_height: int | None = None,
+    ) -> RuntimeSnapshot:
         """Return one batched snapshot for UI and automation clients."""
 
         with self._state_lock:
@@ -1282,6 +1545,19 @@ class AsyncCollectionRuntime:
         elapsed = 0.0
         if episode is not None:
             elapsed = max(0.0, time.monotonic() - episode._started_at)  # noqa: SLF001
+        if max_frame_width is not None or max_frame_height is not None:
+            latest_frames = {
+                name: (
+                    None
+                    if frame is None
+                    else _resize_frame_for_snapshot(
+                        frame,
+                        max_frame_width=max_frame_width,
+                        max_frame_height=max_frame_height,
+                    )
+                )
+                for name, frame in latest_frames.items()
+            }
         driver_metrics = self._driver_metrics_snapshot()
         return RuntimeSnapshot(
             recording=episode is not None,
@@ -1315,17 +1591,72 @@ class AsyncCollectionRuntime:
                 self._valid_robot_sample_histories[robot_name] = history
             history.observe(timestamp)
 
+    def observe_camera_ingest(
+        self,
+        camera_name: str,
+        *,
+        step_ms: float,
+        backlog: int,
+        recorded_samples: int,
+        copied_bytes: int,
+    ) -> None:
+        with self._timing_lock:
+            metrics = self._camera_task_metrics.get(camera_name)
+            if metrics is None:
+                metrics = _MutableCameraIngestMetrics()
+                self._camera_task_metrics[camera_name] = metrics
+            metrics.observe(
+                step_ms=step_ms,
+                backlog=backlog,
+                recorded_samples=recorded_samples,
+                copied_bytes=copied_bytes,
+            )
+
     def update_latest_frame(self, name: str, frame: np.ndarray) -> None:
         with self._state_lock:
             self._latest_frames[name] = frame
 
     def update_latest_robot_state(
-        self, name: str, state: dict[str, np.ndarray]
+        self,
+        name: str,
+        state: dict[str, np.ndarray],
+        *,
+        copy_arrays: bool = True,
     ) -> None:
         with self._state_lock:
-            self._latest_robot_states[name] = {
-                key: np.asarray(value).copy() for key, value in state.items()
-            }
+            self._latest_robot_states[name] = (
+                _copy_state_arrays(state) if copy_arrays else dict(state)
+            )
+
+    def cache_robot_state_sample(
+        self,
+        name: str,
+        timestamp: float,
+        state: dict[str, np.ndarray],
+        *,
+        copy_arrays: bool = False,
+    ) -> None:
+        with self._state_lock:
+            self._cached_robot_states[name] = _CachedRobotState(
+                timestamp=float(timestamp),
+                state=_copy_state_arrays(state) if copy_arrays else dict(state),
+            )
+
+    def cached_robot_state(
+        self,
+        name: str,
+        *,
+        max_age_ms: float | None = None,
+    ) -> tuple[float, dict[str, np.ndarray]] | None:
+        with self._state_lock:
+            cached = self._cached_robot_states.get(name)
+        if cached is None:
+            return None
+        if max_age_ms is not None:
+            age_ms = max(0.0, (time.monotonic() - cached.timestamp) * 1000.0)
+            if age_ms > max(float(max_age_ms), 0.0):
+                return None
+        return cached.timestamp, dict(cached.state)
 
     def update_pair_mode(self, pair_name: str, mapper_mode: str) -> None:
         with self._state_lock:
@@ -1339,6 +1670,20 @@ class AsyncCollectionRuntime:
             episode = self._current_episode
         if episode is not None:
             episode.append_camera(name, ts, frame)
+
+    def record_camera_samples(
+        self,
+        name: str,
+        samples: list[FrameSample],
+    ) -> tuple[int, int]:
+        with self._state_lock:
+            episode = self._current_episode
+        if episode is None or not samples:
+            return 0, 0
+        return episode.append_camera_batch(
+            name,
+            [(sample.timestamp, sample.frame) for sample in samples],
+        )
 
     def record_robot_state(
         self, name: str, ts: float, state: dict[str, np.ndarray]
@@ -1360,6 +1705,9 @@ class AsyncCollectionRuntime:
             self._telemetry_run_history.reset()
             for history in self._valid_robot_sample_histories.values():
                 history.reset()
+            self._camera_task_metrics = {
+                name: _MutableCameraIngestMetrics() for name in self._cameras
+            }
 
     def _robot_target_interval_ms(self, robot_name: str) -> float | None:
         if self._preview_live_feedback and robot_name in self._teleop_leader_names:

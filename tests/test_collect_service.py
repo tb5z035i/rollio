@@ -154,3 +154,34 @@ def test_worker_runtime_service_bootstrap_entries_support_custom_factories(
         assert snapshot.latest_robot_states["leader_arm"]["position"].shape == (6,)
     finally:
         service.close()
+
+
+def test_worker_runtime_service_can_resize_snapshot_frames(tmp_path: Path) -> None:
+    cfg = _build_worker_service_config(tmp_path)
+    service = create_runtime_service(
+        cfg,
+        scheduler_driver="round_robin",
+    )
+    try:
+        service.open()
+
+        deadline = time.monotonic() + 3.0
+        snapshot = service.snapshot(max_frame_width=24, max_frame_height=18)
+        while snapshot.latest_frames.get("cam_main") is None:
+            if time.monotonic() >= deadline:
+                raise AssertionError("Worker runtime never produced a resized preview frame.")
+            time.sleep(0.05)
+            snapshot = service.snapshot(max_frame_width=24, max_frame_height=18)
+
+        resized_frame = snapshot.latest_frames["cam_main"]
+        assert resized_frame is not None
+        assert resized_frame.shape[1] <= 24
+        assert resized_frame.shape[0] <= 18
+
+        full_snapshot = service.snapshot()
+        full_frame = full_snapshot.latest_frames["cam_main"]
+        assert full_frame is not None
+        assert full_frame.shape[1] >= resized_frame.shape[1]
+        assert full_frame.shape[0] >= resized_frame.shape[0]
+    finally:
+        service.close()

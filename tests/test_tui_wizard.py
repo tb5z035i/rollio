@@ -390,6 +390,7 @@ def test_screen_summary_renders_timing_panel_when_debug_enabled(monkeypatch) -> 
     rendered = out.getvalue().decode("utf-8", errors="ignore")
     assert result is True
     assert "TIMING" in rendered
+    assert "snapshot" in rendered
     assert "sched" in rendered
     assert "leader_arm" in rendered
 

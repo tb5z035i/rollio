@@ -3,3 +3,4 @@
 webcam-tui/
 external/
 logs/
+.venv*

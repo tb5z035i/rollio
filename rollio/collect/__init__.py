@@ -17,6 +17,7 @@ from rollio.collect.devices import (
 )
 from rollio.collect.runtime import (
     AsyncCollectionRuntime,
+    CameraIngestMetrics,
     ExportRecord,
     RecordedEpisode,
     RecordedEpisodeSummary,
@@ -54,6 +55,7 @@ __all__ = [
     "AsyncioDriver",
     "AutoMapper",
     "build_camera_from_config",
+    "CameraIngestMetrics",
     "ExportRecord",
     "DriverMetrics",
     "FrameSample",

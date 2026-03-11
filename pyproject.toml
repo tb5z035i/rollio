@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rollio"
-version = "0.1.0"
+version = "1.0.0"
 description = "Timestamp-aligned robot episode collection for VLA/RL training"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.11",
@@ -41,7 +41,7 @@ markers = [
 
 [tool.black]
 line-length = 88
-target-version = ["py311"]
+target-version = ["py310"]
 extend-exclude = "external"
 
 [tool.pylint.main]
