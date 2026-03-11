@@ -18,6 +18,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from rollio.defaults import DEFAULT_CONTROL_DT_SEC
+from rollio.plotjuggler import publish_joint_state
 
 if TYPE_CHECKING:
     from rollio.robot.scanner import DetectedRobot
@@ -609,6 +610,39 @@ class RobotArm(ABC):
         """Whether preview should send a keepalive command after state reads."""
         role = self.info.properties.get("config_role")
         return type(self).default_preview_keepalive(role)
+
+    @property
+    def plotjuggler_enabled(self) -> bool:
+        """Whether this robot should stream joint positions to PlotJuggler."""
+        return bool(self.info.properties.get("plotjuggler_enabled", False))
+
+    @property
+    def plotjuggler_stream_name(self) -> str:
+        """Name used for PlotJuggler telemetry series."""
+        configured_name = self.info.properties.get("config_name")
+        if configured_name:
+            return str(configured_name).strip()
+        return str(self.info.name).strip()
+
+    def configure_plotjuggler(self, enabled: bool) -> None:
+        """Enable or disable PlotJuggler streaming for this robot."""
+        self.info.properties["plotjuggler_enabled"] = bool(enabled)
+
+    def _publish_plotjuggler_joint_state(self, joint_state: JointState) -> None:
+        """Best-effort publish of one joint-state sample to PlotJuggler."""
+        if not self.plotjuggler_enabled or joint_state.position is None:
+            return
+        stream_name = self.plotjuggler_stream_name
+        if not stream_name:
+            return
+        publish_joint_state(
+            stream_name,
+            joint_state.timestamp,
+            tuple(
+                float(value)
+                for value in np.asarray(joint_state.position, dtype=np.float64).reshape(-1)
+            ),
+        )
 
     def query_properties(self) -> dict[str, Any]:
         """Query and update robot properties from hardware.

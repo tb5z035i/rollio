@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import time
 
 import pytest
@@ -11,6 +12,7 @@ from rollio.collect import (
     ThreadedCameraFrameSource,
     build_camera_from_config,
     build_robot_from_config,
+    build_robots_from_config,
     register_camera_factory,
     register_robot_factory,
 )
@@ -138,6 +140,57 @@ def test_runtime_accepts_registered_backend_types(tmp_path: Path) -> None:
         assert metrics["driver"].task_metrics["teleop-pair_ext"].run_count > 0
     finally:
         runtime.close()
+
+
+def test_build_robots_from_config_applies_plotjuggler_flag() -> None:
+    cfg = RollioConfig(
+        robots=[
+            RobotConfig(
+                name="leader_arm",
+                type="pseudo",
+                role="leader",
+                num_joints=6,
+            )
+        ],
+        plotjuggler_enabled=True,
+    )
+
+    robots = build_robots_from_config(cfg)
+
+    assert robots["leader_arm"].plotjuggler_enabled is True
+    assert robots["leader_arm"].plotjuggler_stream_name == "leader_arm"
+
+
+def test_plotjuggler_enabled_robot_publishes_configured_name(monkeypatch) -> None:
+    cfg = RollioConfig(
+        robots=[
+            RobotConfig(
+                name="leader_arm",
+                type="pseudo",
+                role="leader",
+                num_joints=6,
+            )
+        ],
+        plotjuggler_enabled=True,
+    )
+    published: list[tuple[str, float, tuple[float, ...]]] = []
+    monkeypatch.setattr(
+        "rollio.robot.base.publish_joint_state",
+        lambda name, timestamp, position: published.append(
+            (name, timestamp, position)
+        ),
+    )
+
+    robot = build_robots_from_config(cfg)["leader_arm"]
+    try:
+        robot.open()
+        robot.read_joint_state()
+    finally:
+        robot.close()
+
+    assert published
+    assert published[0][0] == "leader_arm"
+    assert len(published[0][2]) == 6
 
 
 def test_threaded_camera_frame_source_captures_frames() -> None:

@@ -420,13 +420,15 @@ class PseudoRobotArm(RobotArm):
         noise_pos = self._rng.normal(0, self._noise_level, self._n_dof)
         noise_vel = self._rng.normal(0, self._noise_level * 10, self._n_dof)
 
-        return JointState(
+        state = JointState(
             timestamp=ts,
             position=self._q.copy() + noise_pos,
             velocity=self._qd.copy() + noise_vel,
             effort=self._tau.copy(),
             is_valid=self._is_open,
         )
+        self._publish_plotjuggler_joint_state(state)
+        return state
 
     # ── Control Mode Setting ──────────────────────────────────────────────
 

@@ -37,7 +37,7 @@ The wizard walks through five screens:
    each detected device, joint positions are displayed live.  You assign a
    channel name and role (leader / follower).
 3. **Project settings** — project name, storage root, collection mode,
-   RGB codec, and depth codec.
+   RGB codec, depth codec, and PlotJuggler streaming toggle.
 4. **Tele-op pairing** — shown only for `mode: teleop`.  You explicitly
    choose which leader controls which follower, and whether the pair uses
    direct joint mapping or FK-IK pose mapping.
@@ -60,6 +60,7 @@ rollio collect --config rollio_config.yaml
 | `description` | string | `""` | Free-text description of the dataset or task. |
 | `fps` | int | `30` | Global target sampling rate (frames per second) for episode recording. All sensors are polled at this rate. |
 | `mode` | string | `"teleop"` | Data-collection mode. `"teleop"` for tele-operation (leader/follower), `"intervention"` for human intervention. |
+| `plotjuggler_enabled` | bool | `false` | When enabled, each robot joint-state read publishes best-effort UDP JSON telemetry to PlotJuggler on `localhost:${PLOTJUGGLER_PORT:-9870}`. |
 
 ### Example
 
@@ -68,6 +69,7 @@ project_name: pick_and_place
 description: "Picking red blocks from tray A to bin B"
 fps: 30
 mode: teleop
+plotjuggler_enabled: false
 ```
 
 ---

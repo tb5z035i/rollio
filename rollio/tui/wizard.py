@@ -32,7 +32,6 @@ from rollio.config.schema import (
     TeleopPairConfig,
     EncoderConfig,
 )
-from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.episode.codecs import (
     available_depth_codec_options,
     available_rgb_codec_options,
@@ -1456,7 +1455,7 @@ def _screen_settings(
     *,
     step: int = 3,
     total_steps: int = 5,
-) -> tuple[str, str, str, str, str] | None:
+) -> tuple[str, str, str, str, str, bool] | None:
     """Project/settings screen — project, storage, mode, and codecs."""
     W, _ = term.cols, term.rows
 
@@ -1526,7 +1525,19 @@ def _screen_settings(
         return None
     depth_codec = depth_options[depth_idx].name
 
-    return name, storage, mode, rgb_codec, depth_codec
+    plotjuggler_idx = _pick_option(
+        term,
+        out,
+        title="PLOTJUGGLER VISUALIZATION",
+        options=["Off", "On"],
+        current_idx=0,
+        subtitle="Stream robot joint positions to PlotJuggler over UDP.",
+    )
+    if plotjuggler_idx is None:
+        return None
+    plotjuggler_enabled = plotjuggler_idx == 1
+
+    return name, storage, mode, rgb_codec, depth_codec, plotjuggler_enabled
 
 
 def _screen_teleop_pairs(
@@ -1732,6 +1743,7 @@ def _screen_summary(
     mode: str,
     video_codec: str,
     depth_codec: str,
+    plotjuggler_enabled: bool,
     teleop_pairs: list[TeleopPairConfig],
     step: int = 5,
     total_steps: int = 5,
@@ -1775,6 +1787,7 @@ def _screen_summary(
             project_name=project_name,
             fps=preview_fps,
             mode=mode,
+            plotjuggler_enabled=plotjuggler_enabled,
             cameras=cam_configs,
             robots=rob_configs,
             teleop_pairs=teleop_pairs,
@@ -1786,7 +1799,7 @@ def _screen_summary(
         )
         return AsyncCollectionRuntime.from_config(
             preview_cfg,
-            scheduler_driver="asyncio",
+            scheduler_driver="round_robin",
             preview_live_feedback=True,
         )
 
@@ -1930,6 +1943,15 @@ def _screen_summary(
                 row,
                 2,
                 f"│ \x1b[1mDepth codec:\x1b[0m \x1b[90m{depth_codec[:info_w-18]}\x1b[0m",
+                info_w,
+            )
+            row += 1
+            pj_state = "\x1b[92mon\x1b[0m" if plotjuggler_enabled else "\x1b[90moff\x1b[0m"
+            _draw_text_clear(
+                buf,
+                row,
+                2,
+                f"│ \x1b[1mPlotJuggler:\x1b[0m {pj_state}",
                 info_w,
             )
             row += 1
@@ -2239,24 +2261,6 @@ def _screen_summary(
                                     f"j{j} \x1b[36m{value_text}\x1b[0m "
                                     f"\x1b[33m{bar}\x1b[0m"
                                 )
-                        control_interval = state.get("control_loop_interval_ms")
-                        control_target = state.get("control_loop_target_interval_ms")
-                        if control_interval is not None and len(control_interval) > 0:
-                            interval_text, frac = _format_control_interval_preview(
-                                float(control_interval[0]),
-                                (
-                                    float(control_target[0])
-                                    if control_target is not None
-                                    and len(control_target) > 0
-                                    else DEFAULT_CONTROL_INTERVAL_MS
-                                ),
-                            )
-                            bar_len = int(frac * bar_w)
-                            bar = "█" * bar_len + "░" * (bar_w - bar_len)
-                            state_lines.append(
-                                f"ctrl \x1b[36m{interval_text}\x1b[0m "
-                                f"\x1b[33m{bar}\x1b[0m"
-                            )
                         reserved_rows = max(len(state_lines), 1, rc.num_joints)
                         for j in range(reserved_rows):
                             line = state_lines[j] if j < len(state_lines) else ""
@@ -2490,7 +2494,14 @@ def run_wizard(
         )
         if settings is None:
             return None
-        project_name, storage_root, mode, video_codec, depth_codec = settings
+        (
+            project_name,
+            storage_root,
+            mode,
+            video_codec,
+            depth_codec,
+            plotjuggler_enabled,
+        ) = settings
 
         teleop_pairs: list[TeleopPairConfig] = []
         if mode == "teleop":
@@ -2535,6 +2546,7 @@ def run_wizard(
             mode=mode,
             video_codec=video_codec,
             depth_codec=depth_codec,
+            plotjuggler_enabled=plotjuggler_enabled,
             teleop_pairs=teleop_pairs,
             step=5,
             total_steps=total_steps,
@@ -2546,6 +2558,7 @@ def run_wizard(
     return RollioConfig(
         project_name=project_name,
         mode=mode,
+        plotjuggler_enabled=plotjuggler_enabled,
         cameras=cam_configs,
         robots=rob_configs,
         teleop_pairs=teleop_pairs,

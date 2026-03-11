@@ -395,7 +395,7 @@ class _AIRBOTStandaloneEEFCommon:
             initialized = handle.init(
                 io_context,
                 self._can_interface,
-                self._control_frequency,
+                250,
             )
             if not initialized:
                 raise RuntimeError(
@@ -538,6 +538,11 @@ class AIRBOTE2B(_AIRBOTStandaloneEEFCommon, RobotArm):
     """AIRBOT E2B exposed as a 1-DOF feedback/keepalive robot."""
 
     ROBOT_TYPE = "airbot_e2b"
+
+    def read_joint_state(self) -> JointState:
+        state = super().read_joint_state()
+        self._publish_plotjuggler_joint_state(state)
+        return state
 
     def _read_direct_joint_state(self) -> JointState:
         state = super()._read_direct_joint_state()
@@ -756,6 +761,11 @@ class AIRBOTG2(_AIRBOTStandaloneEEFCommon, RobotArm):
         self._pvt_velocity = max(0.1, float(pvt_velocity))
         self._properties["pvt_velocity"] = self._pvt_velocity
         self._properties["target_tracking_mode"] = self._target_tracking_mode
+
+    def read_joint_state(self) -> JointState:
+        state = super().read_joint_state()
+        self._publish_plotjuggler_joint_state(state)
+        return state
 
     @classmethod
     def default_direct_map_allowlist(

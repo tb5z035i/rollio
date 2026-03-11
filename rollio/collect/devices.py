@@ -212,6 +212,9 @@ def build_cameras_from_config(cfg: RollioConfig) -> dict[str, ImageSensor]:
 
 def build_robots_from_config(cfg: RollioConfig) -> dict[str, RobotArm]:
     """Instantiate robots from config using registered factories."""
-    return {
-        robot_cfg.name: build_robot_from_config(robot_cfg) for robot_cfg in cfg.robots
-    }
+    robots: dict[str, RobotArm] = {}
+    for robot_cfg in cfg.robots:
+        robot = build_robot_from_config(robot_cfg)
+        robot.configure_plotjuggler(cfg.plotjuggler_enabled)
+        robots[robot_cfg.name] = robot
+    return robots

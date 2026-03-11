@@ -14,11 +14,15 @@
 # description:  Free text — describe the task being recorded.
 # fps:          Global sampling rate for episode recording (Hz).
 # mode:         "teleop" (leader/follower) or "intervention" (human intervention).
+# plotjuggler_enabled:
+#               When true, each robot state read publishes UDP JSON telemetry
+#               to PlotJuggler on localhost:${PLOTJUGGLER_PORT:-9870}.
 
 project_name: default
 description: ""
 fps: 30
 mode: teleop
+plotjuggler_enabled: false
 
 # ── Cameras ───────────────────────────────────────────────────────────────
 # Each entry is one video stream recorded per episode.

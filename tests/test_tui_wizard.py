@@ -152,7 +152,7 @@ def test_screen_settings_allows_valid_teleop_to_continue_to_codecs(
     monkeypatch,
 ) -> None:
     prompts = iter(["demo", "~/rollio_data"])
-    picks = iter([0, 0, 0])
+    picks = iter([0, 0, 0, 1])
 
     monkeypatch.setattr(
         wizard,
@@ -182,6 +182,7 @@ def test_screen_settings_allows_valid_teleop_to_continue_to_codecs(
         "teleop",
         list(available_rgb_codec_options())[0].name,
         list(available_depth_codec_options())[0].name,
+        True,
     )
 
 
@@ -262,6 +263,7 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
         mode="teleop",
         video_codec="mp4v",
         depth_codec="raw",
+        plotjuggler_enabled=True,
         teleop_pairs=[],
         step=5,
         total_steps=5,
@@ -271,6 +273,7 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
     assert created
     assert created[0][1] == "asyncio"
     assert created[0][2] is True
+    assert created[0][0].plotjuggler_enabled is True
     assert preview_runtime.open_called is True
     assert preview_runtime.return_zero_called is True
     assert preview_runtime.close_called is True

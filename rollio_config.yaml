@@ -2,6 +2,7 @@ project_name: default
 description: ''
 fps: 30
 mode: teleop
+plotjuggler_enabled: true
 cameras:
 - name: cam_0
   type: v4l2
@@ -72,8 +73,8 @@ upload:
   api_key_env: ''
 async_pipeline:
   export_queue_size: 4
-  telemetry_hz: 250
-  control_hz: 250
+  telemetry_hz: 500
+  control_hz: 500
   max_pending_episodes: 8
   allow_drop_preview_frames: true
 controls:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -146,6 +147,17 @@ def test_rollio_config_defaults_async_pipeline_to_default_control_hz() -> None:
 
     assert cfg.async_pipeline.telemetry_hz == DEFAULT_CONTROL_HZ
     assert cfg.async_pipeline.control_hz == DEFAULT_CONTROL_HZ
+
+
+def test_rollio_config_save_and_load_persist_plotjuggler_flag(tmp_path: Path) -> None:
+    path = tmp_path / "rollio_config.yaml"
+    cfg = RollioConfig(project_name="demo", plotjuggler_enabled=True)
+
+    cfg.save(path)
+    loaded = RollioConfig.load(path)
+
+    assert "plotjuggler_enabled: true" in path.read_text(encoding="utf-8")
+    assert loaded.plotjuggler_enabled is True
 
 
 def test_rollio_config_validates_explicit_pair_references() -> None:

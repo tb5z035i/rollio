@@ -13,7 +13,7 @@ from rollio.robot.scanner import DetectedRobot
 _AIRBOT_SHARED_RUNTIME_LOCK = threading.Lock()
 _AIRBOT_SHARED_RUNTIMES: dict[int, tuple[Any, Any, Any]] = {}
 
-AIRBOT_SHARED_EXECUTOR_WORKERS = 8
+AIRBOT_SHARED_EXECUTOR_WORKERS = 12
 
 AIRBOT_ARM_ROBOT_TYPE = "airbot_play"
 AIRBOT_EEF_TYPE_TO_ROBOT_TYPE = {

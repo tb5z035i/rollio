@@ -179,6 +179,7 @@ class RollioConfig(BaseModel):
     description: str = ""
     fps: int = 30
     mode: Literal["teleop", "intervention"] = "teleop"
+    plotjuggler_enabled: bool = False
 
     cameras: list[CameraConfig] = Field(default_factory=lambda: [CameraConfig()])
     robots: list[RobotConfig] = Field(default_factory=lambda: [RobotConfig()])

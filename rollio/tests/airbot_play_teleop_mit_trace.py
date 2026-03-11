@@ -13,18 +13,16 @@ Runtime behavior:
 - Leader E2B stays in feedback mode for manual guidance
 - Follower arm runs Rollio MIT target tracking with configurable gains
 - Follower G2 follows the leader E2B with Rollio MIT target tracking
-- The script publishes live JSON telemetry to PlotJuggler over UDP using a
-  background publisher thread so socket/JSON work stays off the control path
+- The script queues live telemetry to PlotJuggler through Rollio's internal
+  UDP publisher so socket/JSON work stays off the control path
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import os
 import signal
-import socket
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -32,19 +30,16 @@ from typing import Any
 import numpy as np
 
 from rollio.defaults import DEFAULT_CONTROL_HZ
-
-PLOTJUGGLER_UDP_HOST = "127.0.0.1"
-PLOTJUGGLER_UDP_PORT = 9870
-ARM_JOINT_LABELS = ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6")
-ARM_STREAM_KEYS = tuple(
-    (
-        f"leader/{label}",
-        f"target/{label}",
-        f"follower/{label}",
-        f"error/{label}",
-    )
-    for label in ARM_JOINT_LABELS
+from rollio.plotjuggler import (
+    DEFAULT_PLOTJUGGLER_PORT,
+    PLOTJUGGLER_HOST,
+    PLOTJUGGLER_PORT_ENV,
+    close_plotjuggler_publisher,
+    publish_joint_state,
 )
+
+ARM_JOINT_COUNT = 6
+LOCAL_PLOTJUGGLER_HOSTS = {PLOTJUGGLER_HOST, "localhost"}
 
 
 def _signal_handler(signum, frame):
@@ -105,121 +100,52 @@ def _format_vector(values: np.ndarray) -> str:
     return "[" + ", ".join(f"{float(v):7.3f}" for v in values) + "]"
 
 
-def _build_plotjuggler_message(sample: TraceSample) -> dict[str, float]:
-    payload: dict[str, float] = {
-        "timestamp": float(sample.timestamp_sec),
-    }
-    arm_error = sample.follower_position[:6] - sample.mapped_target_position[:6]
-
-    for idx, (leader_key, target_key, follower_key, error_key) in enumerate(
-        ARM_STREAM_KEYS
-    ):
-        leader_value = float(sample.leader_position[idx])
-        target_value = float(sample.mapped_target_position[idx])
-        follower_value = float(sample.follower_position[idx])
-        payload[leader_key] = leader_value
-        payload[target_key] = target_value
-        payload[follower_key] = follower_value
-        payload[error_key] = follower_value - target_value
-
-    leader_e2b = float(sample.leader_position[6])
-    target_g2 = float(sample.mapped_target_position[6])
-    follower_g2 = float(sample.follower_position[6])
-    payload["leader/e2b"] = leader_e2b
-    payload["target/g2"] = target_g2
-    payload["follower/g2"] = follower_g2
-    payload["error/g2"] = follower_g2 - target_g2
-    payload["error/arm_rms"] = float(np.sqrt(np.mean(np.square(arm_error))))
-    return payload
+def _as_float_tuple(values: np.ndarray) -> tuple[float, ...]:
+    return tuple(
+        float(value) for value in np.asarray(values, dtype=np.float64).reshape(-1)
+    )
 
 
-def _encode_plotjuggler_message(sample: TraceSample) -> bytes:
-    return json.dumps(
-        _build_plotjuggler_message(sample),
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-
-class _PlotJugglerUdpPublisher:
-    """Low-overhead latest-sample UDP JSON publisher for PlotJuggler.
-
-    The control loop only swaps in the newest sample. JSON encoding and UDP
-    I/O happen on a background thread so telemetry publishing does not add
-    noticeable latency to the follow loop.
-    """
-
-    def __init__(self, host: str, port: int, publish_hz: float) -> None:
-        self._address = (str(host), int(port))
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setblocking(False)
-        self._period_sec = 1.0 / max(float(publish_hz), 1e-6)
-        self._stop_event = threading.Event()
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._latest_sample: TraceSample | None = None
-        self._latest_seq = 0
-        self._sent_seq = 0
-        self._sent_packets = 0
-
-    @property
-    def address(self) -> tuple[str, int]:
-        return self._address
-
-    @property
-    def sent_packets(self) -> int:
-        return self._sent_packets
-
-    def start(self) -> None:
-        if self._thread is not None:
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="plotjuggler-udp-publisher",
-            daemon=True,
+def _normalize_plotjuggler_host(raw: str) -> str:
+    host = str(raw).strip().lower()
+    if host not in LOCAL_PLOTJUGGLER_HOSTS:
+        raise ValueError(
+            "udp-host must be 127.0.0.1 or localhost because Rollio's internal "
+            "PlotJuggler publisher only supports local UDP."
         )
-        self._thread.start()
+    return PLOTJUGGLER_HOST
 
-    def publish_latest(self, sample: TraceSample) -> None:
-        with self._lock:
-            self._latest_sample = sample
-            self._latest_seq += 1
 
-    def _snapshot_latest(self) -> tuple[TraceSample | None, int]:
-        with self._lock:
-            return self._latest_sample, self._latest_seq
-
-    def _run(self) -> None:
-        next_publish = time.monotonic()
-        while not self._stop_event.is_set():
-            now = time.monotonic()
-            if now < next_publish:
-                self._stop_event.wait(next_publish - now)
-                continue
-            next_publish += self._period_sec
-
-            sample, sample_seq = self._snapshot_latest()
-            if sample is None or sample_seq == self._sent_seq:
-                continue
-
-            try:
-                self._sock.sendto(_encode_plotjuggler_message(sample), self._address)
-            except (BlockingIOError, InterruptedError):
-                continue
-            except OSError:
-                if self._stop_event.is_set():
-                    break
-                continue
-
-            self._sent_seq = sample_seq
-            self._sent_packets += 1
-
-    def close(self) -> None:
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=max(1.0, self._period_sec * 4.0))
-            self._thread = None
-        self._sock.close()
+def _publish_plotjuggler_sample(sample: TraceSample) -> None:
+    arm_error = (
+        sample.follower_position[:ARM_JOINT_COUNT]
+        - sample.mapped_target_position[:ARM_JOINT_COUNT]
+    )
+    streams = (
+        ("leader_arm", _as_float_tuple(sample.leader_position[:ARM_JOINT_COUNT])),
+        (
+            "target_arm",
+            _as_float_tuple(sample.mapped_target_position[:ARM_JOINT_COUNT]),
+        ),
+        ("follower_arm", _as_float_tuple(sample.follower_position[:ARM_JOINT_COUNT])),
+        ("error_arm", _as_float_tuple(arm_error)),
+        ("leader_e2b", (float(sample.leader_position[ARM_JOINT_COUNT]),)),
+        ("target_g2", (float(sample.mapped_target_position[ARM_JOINT_COUNT]),)),
+        ("follower_g2", (float(sample.follower_position[ARM_JOINT_COUNT]),)),
+        (
+            "error_g2",
+            (
+                float(
+                    sample.follower_position[ARM_JOINT_COUNT]
+                    - sample.mapped_target_position[ARM_JOINT_COUNT]
+                ),
+            ),
+        ),
+        ("error_arm_rms", (float(np.sqrt(np.mean(np.square(arm_error)))),)),
+    )
+    timestamp = float(sample.timestamp_sec)
+    for stream_name, position in streams:
+        publish_joint_state(stream_name, timestamp, position)
 
 
 def _run_follow_tick(
@@ -319,7 +245,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run a leader/follower AIRBOT Play teleoperation trace with leader "
-            "gravity compensation and follower MIT tracking, then stream JSON to PlotJuggler."
+            "gravity compensation and follower MIT tracking, then stream "
+            "telemetry to PlotJuggler through Rollio's internal publisher."
         )
     )
     parser.add_argument(
@@ -374,20 +301,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--udp-host",
-        default=PLOTJUGGLER_UDP_HOST,
-        help=f"PlotJuggler UDP host (default: {PLOTJUGGLER_UDP_HOST})",
+        default=PLOTJUGGLER_HOST,
+        help=(
+            "PlotJuggler UDP host. Only local PlotJuggler is supported by "
+            f"Rollio's internal publisher (default: {PLOTJUGGLER_HOST})"
+        ),
     )
     parser.add_argument(
         "--udp-port",
         type=int,
-        default=PLOTJUGGLER_UDP_PORT,
-        help=f"PlotJuggler UDP port (default: {PLOTJUGGLER_UDP_PORT})",
+        default=DEFAULT_PLOTJUGGLER_PORT,
+        help=(
+            "PlotJuggler UDP port. Equivalent to setting "
+            f"`{PLOTJUGGLER_PORT_ENV}` (default: {DEFAULT_PLOTJUGGLER_PORT})"
+        ),
     )
     parser.add_argument(
         "--publish-hz",
         type=float,
         default=25.0,
-        help="Background UDP publish rate to PlotJuggler in Hz (default: 25.0)",
+        help=(
+            "Maximum rate for queueing PlotJuggler updates through Rollio's "
+            "internal publisher in Hz (default: 25.0)"
+        ),
     )
     parser.add_argument(
         "--print-hz",
@@ -423,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("warmup-sec must be non-negative.")
         if args.eef_scale <= 0.0:
             raise ValueError("eef-scale must be positive.")
+        args.udp_host = _normalize_plotjuggler_host(args.udp_host)
         if args.publish_hz <= 0.0:
             raise ValueError("publish-hz must be positive.")
         if args.udp_port <= 0:
@@ -430,6 +367,8 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"Error: {exc}")
         return 1
+
+    os.environ[PLOTJUGGLER_PORT_ENV] = str(args.udp_port)
 
     from rollio.robot import AIRBOTE2B, AIRBOTG2, AIRBOTPlay, is_airbot_available
     from rollio.robot.can_utils import is_can_interface_up
@@ -455,18 +394,10 @@ def main(argv: list[str] | None = None) -> int:
     leader_eef = None
     follower_arm = None
     follower_g2 = None
-    publisher: _PlotJugglerUdpPublisher | None = None
     samples: list[TraceSample] = []
 
     original_handler = signal.signal(signal.SIGINT, _signal_handler)
     try:
-        publisher = _PlotJugglerUdpPublisher(
-            args.udp_host,
-            args.udp_port,
-            args.publish_hz,
-        )
-        publisher.start()
-
         if verbose:
             print()
             print("=" * 72)
@@ -480,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"kd       : {_format_vector(arm_kd)}")
             print(f"E2B->G2  : scale={args.eef_scale:.3f}, tracking=mit")
             print(
-                f"UDP      : {publisher.address[0]}:{publisher.address[1]} "
+                f"UDP      : {args.udp_host}:{args.udp_port} "
                 f"@ {args.publish_hz:.1f} Hz"
             )
             print()
@@ -489,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             print("- Set message protocol to `JSON`")
             print("- Bind to `0.0.0.0` or leave the default all-interfaces bind")
             print("- Enable `use timestamp if available` with field name `timestamp`")
+            print("- Streams appear under names like `leader_arm/j0` and `error_g2/j0`")
             print()
 
         leader_arm = AIRBOTPlay(
@@ -562,8 +494,10 @@ def main(argv: list[str] | None = None) -> int:
 
         start = time.monotonic()
         next_tick = start
+        next_plotjuggler_publish = start
         last_print = start
         print_period = 1.0 / max(args.print_hz, 1e-6)
+        plotjuggler_period = 1.0 / max(args.publish_hz, 1e-6)
         while True:
             now = time.monotonic()
             elapsed = now - start
@@ -587,8 +521,10 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             samples.append(sample)
 
-            if publisher is not None:
-                publisher.publish_latest(sample)
+            if now >= next_plotjuggler_publish:
+                _publish_plotjuggler_sample(sample)
+                while next_plotjuggler_publish <= now:
+                    next_plotjuggler_publish += plotjuggler_period
 
             if verbose and (now - last_print >= print_period):
                 arm_error = (
@@ -600,8 +536,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"\rt={elapsed:6.2f}s  "
                     f"arm_rms={np.sqrt(np.mean(np.square(arm_error))):7.4f} rad  "
-                    f"eef_err={eef_error:+7.4f} m  "
-                    f"udp={publisher.sent_packets if publisher is not None else 0}",
+                    f"eef_err={eef_error:+7.4f} m",
                     end="",
                     flush=True,
                 )
@@ -611,9 +546,8 @@ def main(argv: list[str] | None = None) -> int:
             print()
             print(f"\nRecorded {len(samples)} valid samples.")
             print(
-                "Published "
-                f"{publisher.sent_packets if publisher is not None else 0} "
-                "UDP JSON packets."
+                f"Queued PlotJuggler updates to {args.udp_host}:{args.udp_port} "
+                f"at up to {args.publish_hz:.1f} Hz."
             )
             if follower_arm is not None:
                 metrics = follower_arm.control_loop_metrics()
@@ -656,11 +590,10 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, RuntimeError, ValueError, TypeError):
                 pass
 
-        if publisher is not None:
-            try:
-                publisher.close()
-            except (OSError, RuntimeError, ValueError, TypeError):
-                pass
+        try:
+            close_plotjuggler_publisher()
+        except (OSError, RuntimeError, ValueError, TypeError):
+            pass
 
         for robot in (follower_g2, follower_arm, leader_eef, leader_arm):
             if robot is None:

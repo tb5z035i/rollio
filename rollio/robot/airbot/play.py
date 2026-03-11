@@ -168,7 +168,7 @@ class AIRBOTPlay(RobotArm):
 
     # Fixed gains required by the AIRBOT controller for MIT target tracking.
     TARGET_TRACKING_KP = np.array([200.0, 200.0, 200.0, 50.0, 50.0, 50.0])
-    TARGET_TRACKING_KD = np.array([5.0, 5.0, 5.0, 0.5, 0.5, 0.5])
+    TARGET_TRACKING_KD = np.array([3.0, 3.0, 3.0, 1.0, 1.0, 1.0])
     TARGET_TRACKING_MODE_MIT = "mit"
     TARGET_TRACKING_MODE_PVT = "pvt"
     TARGET_TRACKING_MODE_CHOICES = (
@@ -898,7 +898,7 @@ class AIRBOTPlay(RobotArm):
             initialized = self._arm.init(
                 io_context,
                 self._can_interface,
-                self._control_frequency,
+                250,
             )
             if not initialized:
                 raise RuntimeError(
@@ -954,7 +954,9 @@ class AIRBOTPlay(RobotArm):
 
     def read_joint_state(self) -> JointState:
         """Read current joint state from AIRBOT arm."""
-        return self._read_direct_joint_state()
+        state = self._read_direct_joint_state()
+        self._publish_plotjuggler_joint_state(state)
+        return state
 
     # ── Control Mode Setting ──────────────────────────────────────────────
 

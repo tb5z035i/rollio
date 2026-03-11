@@ -3,12 +3,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import rollio.tests.airbot_play_teleop_mit_trace as mit_trace
 from rollio.tests.airbot_play_teleop_mit_trace import (
+    PLOTJUGGLER_HOST,
     TraceSample,
     _build_arg_parser,
-    _encode_plotjuggler_message,
-    _build_plotjuggler_message,
     _clamp_g2_target,
+    _normalize_plotjuggler_host,
     _parse_axis_values,
 )
 
@@ -45,7 +46,19 @@ def test_arg_parser_no_longer_accepts_g2_velocity_flag() -> None:
         parser.parse_args(["--g2-velocity", "25"])
 
 
-def test_build_plotjuggler_message_flattens_named_series() -> None:
+def test_normalize_plotjuggler_host_accepts_localhost_alias() -> None:
+    assert _normalize_plotjuggler_host("localhost") == PLOTJUGGLER_HOST
+    assert _normalize_plotjuggler_host(PLOTJUGGLER_HOST) == PLOTJUGGLER_HOST
+
+
+def test_normalize_plotjuggler_host_rejects_remote_host() -> None:
+    with pytest.raises(ValueError, match="only supports local UDP"):
+        _normalize_plotjuggler_host("192.168.1.5")
+
+
+def test_publish_plotjuggler_sample_uses_internal_rollio_publisher(
+    monkeypatch,
+) -> None:
     sample = TraceSample(
         timestamp_sec=123.5,
         leader_position=np.array([1, 2, 3, 4, 5, 6, 0.01], dtype=np.float64),
@@ -54,31 +67,37 @@ def test_build_plotjuggler_message_flattens_named_series() -> None:
         ),
         follower_position=np.array([11, 19, 29, 41, 49, 61, 0.03], dtype=np.float64),
     )
+    published: list[tuple[str, float, tuple[float, ...]]] = []
 
-    message = _build_plotjuggler_message(sample)
-
-    assert message["timestamp"] == 123.5
-    assert message["leader/joint1"] == 1.0
-    assert message["target/joint6"] == 60.0
-    assert message["follower/joint3"] == 29.0
-    assert message["leader/e2b"] == 0.01
-    assert message["target/g2"] == 0.02
-    assert message["follower/g2"] == 0.03
-    assert message["error/joint2"] == -1.0
-    assert message["error/g2"] == pytest.approx(0.01)
-    assert message["error/arm_rms"] > 0.0
-
-
-def test_encode_plotjuggler_message_returns_json_bytes() -> None:
-    sample = TraceSample(
-        timestamp_sec=1.25,
-        leader_position=np.array([0, 0, 0, 0, 0, 0, 0.0], dtype=np.float64),
-        mapped_target_position=np.array([1, 1, 1, 1, 1, 1, 0.02], dtype=np.float64),
-        follower_position=np.array([2, 2, 2, 2, 2, 2, 0.03], dtype=np.float64),
+    monkeypatch.setattr(
+        mit_trace,
+        "publish_joint_state",
+        lambda name, timestamp, position: published.append((name, timestamp, position)),
     )
 
-    encoded = _encode_plotjuggler_message(sample)
+    mit_trace._publish_plotjuggler_sample(sample)  # pylint: disable=protected-access
 
-    assert isinstance(encoded, bytes)
-    assert b" " not in encoded
-    assert b"timestamp" in encoded
+    assert [name for name, _, _ in published] == [
+        "leader_arm",
+        "target_arm",
+        "follower_arm",
+        "error_arm",
+        "leader_e2b",
+        "target_g2",
+        "follower_g2",
+        "error_g2",
+        "error_arm_rms",
+    ]
+    assert all(timestamp == 123.5 for _, timestamp, _ in published)
+    published_by_name = {name: position for name, _, position in published}
+    assert published_by_name["leader_arm"] == (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    assert published_by_name["target_arm"] == (10.0, 20.0, 30.0, 40.0, 50.0, 60.0)
+    assert published_by_name["follower_arm"] == (11.0, 19.0, 29.0, 41.0, 49.0, 61.0)
+    assert published_by_name["error_arm"] == (1.0, -1.0, -1.0, 1.0, -1.0, 1.0)
+    assert published_by_name["leader_e2b"] == (0.01,)
+    assert published_by_name["target_g2"] == (0.02,)
+    assert published_by_name["follower_g2"] == (0.03,)
+    assert published_by_name["error_g2"] == pytest.approx((0.01,))
+    assert published_by_name["error_arm_rms"] == pytest.approx(
+        (float(np.sqrt(1.0)),)
+    )
