@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -42,6 +43,8 @@ class DriverMetrics:
     last_loop_us: float = 0.0
     avg_loop_us: float = 0.0
     max_loop_us: float = 0.0
+    recent_loop_intervals_ms: tuple[float, ...] = ()
+    last_loop_age_ms: float | None = None
 
 
 @dataclass
@@ -115,12 +118,17 @@ class BaseSchedulerDriver:
     """Common scheduling logic shared by both driver implementations."""
 
     DRIVER_NAME = "base"
+    LOOP_HISTORY_LIMIT = 64
 
     def __init__(self, tasks: list[ScheduledTask]) -> None:
         self._tasks = tasks
         self._metrics_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._loop_metrics = _MutableLoopMetrics()
+        self._loop_run_timestamps: deque[float] = deque(maxlen=self.LOOP_HISTORY_LIMIT)
+        self._loop_interval_history_ms: deque[float] = deque(
+            maxlen=self.LOOP_HISTORY_LIMIT
+        )
         self._states: list[_TaskState] = [
             _TaskState(
                 task=task,
@@ -137,6 +145,7 @@ class BaseSchedulerDriver:
         raise NotImplementedError
 
     def metrics(self) -> DriverMetrics:
+        now = time.monotonic()
         with self._metrics_lock:
             task_metrics = {
                 state.task.name: state.metrics.freeze() for state in self._states
@@ -147,6 +156,10 @@ class BaseSchedulerDriver:
                 avg_loop_us=self._loop_metrics.avg_loop_us,
                 max_loop_us=self._loop_metrics.max_loop_us,
             )
+            recent_loop_intervals_ms = tuple(self._loop_interval_history_ms)
+            last_loop_timestamp = (
+                self._loop_run_timestamps[-1] if self._loop_run_timestamps else None
+            )
         return DriverMetrics(
             driver_name=self.DRIVER_NAME,
             task_metrics=task_metrics,
@@ -154,10 +167,22 @@ class BaseSchedulerDriver:
             last_loop_us=loop_metrics.last_loop_us,
             avg_loop_us=loop_metrics.avg_loop_us,
             max_loop_us=loop_metrics.max_loop_us,
+            recent_loop_intervals_ms=recent_loop_intervals_ms,
+            last_loop_age_ms=(
+                max(0.0, (now - last_loop_timestamp) * 1000.0)
+                if last_loop_timestamp is not None
+                else None
+            ),
         )
 
     def _observe_loop(self, elapsed_sec: float) -> None:
+        now = time.monotonic()
         with self._metrics_lock:
+            if self._loop_run_timestamps:
+                self._loop_interval_history_ms.append(
+                    max(0.0, (now - self._loop_run_timestamps[-1]) * 1000.0)
+                )
+            self._loop_run_timestamps.append(now)
             self._loop_metrics.observe(elapsed_sec)
 
     def _run_due_tasks(self) -> tuple[bool, float | None]:

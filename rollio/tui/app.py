@@ -10,6 +10,7 @@ import sys
 import termios
 import time
 import tty
+from collections import deque
 
 import numpy as np
 
@@ -23,6 +24,7 @@ from rollio.tui.renderer import (
     calc_render_size,
     render_frame,
 )
+from rollio.tui.timing import build_timing_panel_lines, make_timing_trace
 
 # ── Synchronised output ───────────────────────────────────────────────
 _SYNC_S = b"\x1b[?2026h"
@@ -243,6 +245,7 @@ def _help_panel_lines(
         f"  {keep_key:<8} keep reviewed",
         f"  {discard_key:<8} discard reviewed",
         "  m        render mode",
+        "  \\        debug",
         "  q        quit",
         "",
         "\x1b[1mWorkflow\x1b[0m",
@@ -307,6 +310,9 @@ def run_collection(cfg: RollioConfig) -> None:
     mode_idx = 0  # start at "true" (24-bit)
     _t_prev_frame = time.monotonic()
     actual_fps = 0.0
+    show_debug = False
+    render_gap_history_ms: deque[float] = deque(maxlen=64)
+    render_work_history_ms: deque[float] = deque(maxlen=64)
 
     try:
         runtime.open()
@@ -320,6 +326,7 @@ def run_collection(cfg: RollioConfig) -> None:
                 _t_prev_frame = t0
                 if _frame_dt > 0:
                     actual_fps = 0.9 * actual_fps + 0.1 / _frame_dt
+                    render_gap_history_ms.append(_frame_dt * 1000.0)
                 render_mode = RENDER_MODES[mode_idx]
 
                 # ── Input ────────────────────────────────────────
@@ -328,6 +335,8 @@ def run_collection(cfg: RollioConfig) -> None:
                     break
                 elif key == "m":
                     mode_idx = (mode_idx + 1) % len(RENDER_MODES)
+                elif key == "\\":
+                    show_debug = not show_debug
                 elif _matches_key_binding(key, cfg.controls.start_stop):
                     if runtime.recording:
                         pending_episode = runtime.stop_episode()
@@ -356,8 +365,12 @@ def run_collection(cfg: RollioConfig) -> None:
                 # ── Layout ───────────────────────────────────────
                 W, H = term.cols, term.rows
                 status_h = 2
-                help_w = max(26, min(36, W // 4))
-                left_w = max(20, W - help_w)
+                side_w = (
+                    max(32, min(48, W // 3))
+                    if show_debug
+                    else max(26, min(36, W // 4))
+                )
+                left_w = max(20, W - side_w)
                 body_h = max(2, H - status_h)
                 robot_h = (
                     min(
@@ -376,7 +389,28 @@ def run_collection(cfg: RollioConfig) -> None:
                     if robot_h
                     else []
                 )
-                help_lines = _help_panel_lines(cfg, runtime, help_w, body_h)
+                diagnostics_getter = getattr(runtime, "timing_diagnostics", None)
+                timing_diagnostics = (
+                    diagnostics_getter() if callable(diagnostics_getter) else None
+                )
+                side_lines = (
+                    build_timing_panel_lines(
+                        panel_w=side_w,
+                        panel_h=body_h,
+                        diagnostics=timing_diagnostics,
+                        render_gap_trace=make_timing_trace(
+                            tuple(render_gap_history_ms),
+                            target_interval_ms=target_dt * 1000.0,
+                            age_ms=0.0 if render_gap_history_ms else None,
+                        ),
+                        render_work_trace=make_timing_trace(
+                            tuple(render_work_history_ms),
+                            target_interval_ms=target_dt * 1000.0,
+                        ),
+                    )
+                    if show_debug
+                    else _help_panel_lines(cfg, runtime, side_w, body_h)
+                )
                 status_line_1, status_line_2 = _status_lines(
                     runtime,
                     pending_episode,
@@ -461,9 +495,9 @@ def run_collection(cfg: RollioConfig) -> None:
                     frame_out,
                     row=1,
                     col=left_w + 1,
-                    width=help_w,
+                    width=side_w,
                     height=body_h,
-                    lines=help_lines,
+                    lines=side_lines,
                 )
 
                 # ── Status bar ───────────────────────────────────
@@ -479,6 +513,7 @@ def run_collection(cfg: RollioConfig) -> None:
 
                 out.write(_SYNC_S + bytes(frame_out) + status_bytes + _SYNC_E)
                 out.flush()
+                render_work_history_ms.append((time.monotonic() - t0) * 1000.0)
 
                 # ── Throttle ─────────────────────────────────────
                 dt = time.monotonic() - t0

@@ -7,6 +7,7 @@ import os
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +63,79 @@ class RecordedEpisode:
     @property
     def duration(self) -> float:
         return self.data.duration
+
+
+@dataclass(frozen=True)
+class TimingTrace:
+    """Compact timing summary suitable for TUI diagnostics."""
+
+    intervals_ms: tuple[float, ...] = ()
+    target_interval_ms: float | None = None
+    last_gap_ms: float | None = None
+    max_gap_ms: float | None = None
+    age_ms: float | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeTimingDiagnostics:
+    """Short-term timing histories used by TUI debug visualizations."""
+
+    scheduler_loop: TimingTrace = field(default_factory=TimingTrace)
+    telemetry_runs: TimingTrace = field(default_factory=TimingTrace)
+    control_runs: TimingTrace = field(default_factory=TimingTrace)
+    valid_robot_samples: dict[str, TimingTrace] = field(default_factory=dict)
+
+
+class _TimingHistory:
+    """Bounded monotonic timestamp history for recent interval analysis."""
+
+    def __init__(self, maxlen: int = 64) -> None:
+        self._timestamps: deque[float] = deque(maxlen=maxlen)
+        self._intervals_ms: deque[float] = deque(maxlen=maxlen)
+
+    def observe(self, timestamp: float | None = None) -> None:
+        ts = time.monotonic() if timestamp is None else float(timestamp)
+        if self._timestamps:
+            self._intervals_ms.append(max(0.0, (ts - self._timestamps[-1]) * 1000.0))
+        self._timestamps.append(ts)
+
+    def reset(self) -> None:
+        self._timestamps.clear()
+        self._intervals_ms.clear()
+
+    def snapshot(
+        self,
+        *,
+        target_interval_ms: float | None = None,
+        now: float | None = None,
+    ) -> TimingTrace:
+        intervals = tuple(self._intervals_ms)
+        last_timestamp = self._timestamps[-1] if self._timestamps else None
+        current_time = time.monotonic() if now is None else float(now)
+        return TimingTrace(
+            intervals_ms=intervals,
+            target_interval_ms=target_interval_ms,
+            last_gap_ms=intervals[-1] if intervals else None,
+            max_gap_ms=max(intervals) if intervals else None,
+            age_ms=(
+                max(0.0, (current_time - last_timestamp) * 1000.0)
+                if last_timestamp is not None
+                else None
+            ),
+        )
+
+
+def _target_interval_ms(rate_hz: int) -> float | None:
+    hz = max(int(rate_hz), 0)
+    if hz <= 0:
+        return None
+    return 1000.0 / float(hz)
+
+
+def _observe_runtime_hook(runtime: object, name: str, *args: object) -> None:
+    hook = getattr(runtime, name, None)
+    if callable(hook):
+        hook(*args)
 
 
 @dataclass
@@ -625,6 +699,7 @@ class RobotTelemetryTask:
             # In preview, paired leaders are already sampled by the teleop task.
             # Re-reading them here only adds scheduler load and leader-side latency.
             return
+        _observe_runtime_hook(self._runtime, "observe_telemetry_run")
         if (
             self._runtime._preview_live_feedback  # noqa: SLF001
             and self._robot.control_mode == ControlMode.FREE_DRIVE
@@ -633,6 +708,13 @@ class RobotTelemetryTask:
         ):
             self._robot.step_free_drive()
         joint_state = self._robot.read_joint_state()
+        if joint_state.is_valid and joint_state.position is not None:
+            _observe_runtime_hook(
+                self._runtime,
+                "observe_valid_robot_sample",
+                self._robot_name,
+                joint_state.timestamp,
+            )
         if (
             self._preview_keepalive
             and joint_state.is_valid
@@ -682,12 +764,24 @@ class TeleopTask:
     def step(self) -> None:
         # AIRBOT backends replay the latest intent in their own device threads,
         # but we still refresh the newest leader/follower targets here.
+        _observe_runtime_hook(self._runtime, "observe_control_run")
         self._pair.leader.step_free_drive()
         command = self._mapper.map_command(
             self._pair.leader,
             self._pair.follower,
             previous_target=self._last_target,
         )
+        if (
+            command.leader_joint_state is not None
+            and command.leader_joint_state.is_valid
+            and command.leader_joint_state.position is not None
+        ):
+            _observe_runtime_hook(
+                self._runtime,
+                "observe_valid_robot_sample",
+                self._pair.leader_name,
+                command.leader_joint_state.timestamp,
+            )
         if (
             self._runtime._preview_live_feedback  # noqa: SLF001
             and command.leader_joint_state is not None
@@ -760,6 +854,7 @@ class AsyncCollectionRuntime:
         self._preview_live_feedback = preview_live_feedback
         self._teleop_leader_names = {pair.leader_name for pair in teleop_pairs}
         self._state_lock = threading.Lock()
+        self._timing_lock = threading.Lock()
         self._current_episode: EpisodeAccumulator | None = None
         self._pending_episode: RecordedEpisode | None = None
         self._episode_index = 0
@@ -771,6 +866,11 @@ class AsyncCollectionRuntime:
             name: {} for name in robots
         }
         self._latest_pair_modes: dict[str, str] = {}
+        self._control_run_history = _TimingHistory()
+        self._telemetry_run_history = _TimingHistory()
+        self._valid_robot_sample_histories = {
+            name: _TimingHistory() for name in robots
+        }
         self._preview_keepalive_names: set[str] = set()
         self._frame_sources: dict[str, ThreadedCameraFrameSource] = {}
         self._scheduler = None
@@ -862,6 +962,7 @@ class AsyncCollectionRuntime:
         if self._opened:
             return
 
+        self._reset_timing_histories()
         for robot in self._robots.values():
             robot.open()
             robot.enable()
@@ -1070,6 +1171,73 @@ class AsyncCollectionRuntime:
             "cameras": camera_metrics,
         }
 
+    def timing_diagnostics(self) -> RuntimeTimingDiagnostics:
+        driver_metrics = (
+            self._scheduler.metrics()
+            if self._scheduler is not None
+            else DriverMetrics(driver_name=self._scheduler_driver_name, task_metrics={})
+        )
+        scheduler_intervals = tuple(
+            getattr(driver_metrics, "recent_loop_intervals_ms", ())
+        )
+        target_intervals_ms = tuple(
+            value
+            for value in (
+                _target_interval_ms(self._control_hz),
+                _target_interval_ms(self._telemetry_hz),
+            )
+            if value is not None
+        )
+        now = time.monotonic()
+        with self._timing_lock:
+            control_runs = self._control_run_history.snapshot(
+                target_interval_ms=_target_interval_ms(self._control_hz),
+                now=now,
+            )
+            telemetry_runs = self._telemetry_run_history.snapshot(
+                target_interval_ms=_target_interval_ms(self._telemetry_hz),
+                now=now,
+            )
+            valid_robot_samples = {
+                name: history.snapshot(
+                    target_interval_ms=self._robot_target_interval_ms(name),
+                    now=now,
+                )
+                for name, history in self._valid_robot_sample_histories.items()
+            }
+        return RuntimeTimingDiagnostics(
+            scheduler_loop=TimingTrace(
+                intervals_ms=scheduler_intervals,
+                target_interval_ms=min(target_intervals_ms) if target_intervals_ms else None,
+                last_gap_ms=scheduler_intervals[-1] if scheduler_intervals else None,
+                max_gap_ms=max(scheduler_intervals) if scheduler_intervals else None,
+                age_ms=getattr(driver_metrics, "last_loop_age_ms", None),
+            ),
+            telemetry_runs=telemetry_runs,
+            control_runs=control_runs,
+            valid_robot_samples=valid_robot_samples,
+        )
+
+    def observe_control_run(self, timestamp: float | None = None) -> None:
+        with self._timing_lock:
+            self._control_run_history.observe(timestamp)
+
+    def observe_telemetry_run(self, timestamp: float | None = None) -> None:
+        with self._timing_lock:
+            self._telemetry_run_history.observe(timestamp)
+
+    def observe_valid_robot_sample(
+        self,
+        robot_name: str,
+        timestamp: float | None = None,
+    ) -> None:
+        with self._timing_lock:
+            history = self._valid_robot_sample_histories.get(robot_name)
+            if history is None:
+                history = _TimingHistory()
+                self._valid_robot_sample_histories[robot_name] = history
+            history.observe(timestamp)
+
     def update_latest_frame(self, name: str, frame: np.ndarray) -> None:
         with self._state_lock:
             self._latest_frames[name] = frame
@@ -1108,6 +1276,18 @@ class AsyncCollectionRuntime:
             episode = self._current_episode
         if episode is not None:
             episode.append_pair_action(pair_name, ts, target)
+
+    def _reset_timing_histories(self) -> None:
+        with self._timing_lock:
+            self._control_run_history.reset()
+            self._telemetry_run_history.reset()
+            for history in self._valid_robot_sample_histories.values():
+                history.reset()
+
+    def _robot_target_interval_ms(self, robot_name: str) -> float | None:
+        if self._preview_live_feedback and robot_name in self._teleop_leader_names:
+            return _target_interval_ms(self._control_hz)
+        return _target_interval_ms(self._telemetry_hz)
 
 
 def build_teleop_pairs_from_config(

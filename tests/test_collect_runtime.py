@@ -746,10 +746,10 @@ def test_joint_direct_mapper_keeps_generic_inputs_for_e2b_to_g2() -> None:
 
     assert command.mode == "joint_direct"
     np.testing.assert_allclose(
-        command.position_target, np.array([0.1], dtype=np.float64)
+        command.position_target, np.array([0.11], dtype=np.float64)
     )
     np.testing.assert_allclose(
-        command.velocity_target, np.array([0.01], dtype=np.float64)
+        command.velocity_target, np.array([0.0], dtype=np.float64)
     )
 
 
@@ -798,7 +798,7 @@ def test_teleop_task_preserves_generic_tracking_kwargs_for_e2b_to_g2_pair() -> N
     )
     np.testing.assert_allclose(
         np.asarray(captured["velocity_target"], dtype=np.float64),
-        np.array([0.01], dtype=np.float64),
+        np.array([0.0], dtype=np.float64),
     )
 
 
@@ -887,6 +887,28 @@ def test_scheduler_metrics_are_exposed_for_round_robin_driver(tmp_path: Path) ->
         assert camera_metrics["cam_left"].captured_frames > 0
     finally:
         driver_stop.set()
+        runtime.close()
+
+
+def test_timing_diagnostics_capture_recent_histories(tmp_path: Path) -> None:
+    runtime = _build_runtime(
+        tmp_path,
+        export_delay_sec=0.0,
+        scheduler_driver="round_robin",
+    )
+    try:
+        runtime.open()
+        time.sleep(0.25)
+
+        diagnostics = runtime.timing_diagnostics()
+
+        assert diagnostics.scheduler_loop.intervals_ms
+        assert diagnostics.telemetry_runs.intervals_ms
+        assert diagnostics.control_runs.intervals_ms
+        assert diagnostics.scheduler_loop.age_ms is not None
+        assert diagnostics.valid_robot_samples["leader_a"].age_ms is not None
+        assert diagnostics.valid_robot_samples["leader_a"].last_gap_ms is not None
+    finally:
         runtime.close()
 
 

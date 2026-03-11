@@ -158,6 +158,7 @@ def _run_follow_tick(
     use_leader_velocity: bool,
     timestamp_sec: float | None = None,
 ) -> TraceSample | None:
+    del use_leader_velocity
     leader_arm.step_free_drive()
     leader_eef.step_free_drive()
 
@@ -171,9 +172,7 @@ def _run_follow_tick(
     ):
         return None
 
-    arm_velocity_target = (
-        leader_arm_vel if use_leader_velocity else np.zeros_like(leader_arm_pos)
-    )
+    arm_velocity_target = np.zeros_like(leader_arm_pos)
     leader_g2_target = _clamp_g2_target(float(leader_eef_pos[0]) * eef_scale)
 
     follower_arm.step_target_tracking(

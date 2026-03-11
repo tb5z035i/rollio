@@ -15,6 +15,7 @@ import termios
 import threading
 import time
 import tty
+from collections import deque
 
 import numpy as np
 
@@ -38,6 +39,7 @@ from rollio.episode.codecs import (
 )
 from rollio.sensors.base import CameraFormat, CameraMode, ImageSensor
 from rollio.sensors.pseudo_camera import PseudoCamera
+from rollio.tui.timing import build_timing_panel_lines, make_timing_trace
 from rollio.sensors.pseudo_robot import PseudoRobot
 from rollio.sensors.realsense_camera import RealSenseCamera
 from rollio.sensors.scanner import DetectedDevice, scan_cameras, scan_robots
@@ -1762,12 +1764,15 @@ def _screen_summary(
     _render_loop_count = 0
     _render_last_loop_us = 0.0
     _render_avg_loop_us = 0.0
+    _render_gap_history_ms: deque[float] = deque(maxlen=64)
+    _render_work_history_ms: deque[float] = deque(maxlen=64)
     result = None
     _needs_clear = True
     selected_cam = 0 if cam_entries else -1
     _needs_restart = True
     preview_runtime: AsyncCollectionRuntime | None = None
     preview_started_at: float | None = None
+    preview_target_fps = max([30, *[cfg.fps for cfg in cam_configs]])
 
     def _draw_text_clear(buf, row: int, col: int, text: str, clear_w: int = 0):
         """Draw text and clear to specified width or end of line."""
@@ -1782,10 +1787,9 @@ def _screen_summary(
             buf.write(f"\x1b[{row};{col}H{text}\x1b[K\x1b[0m".encode())
 
     def _build_preview_runtime() -> AsyncCollectionRuntime:
-        preview_fps = max([30, *[cfg.fps for cfg in cam_configs]])
         preview_cfg = RollioConfig(
             project_name=project_name,
-            fps=preview_fps,
+            fps=preview_target_fps,
             mode=mode,
             plotjuggler_enabled=plotjuggler_enabled,
             cameras=cam_configs,
@@ -1866,6 +1870,12 @@ def _screen_summary(
                 if preview_runtime is not None
                 else None
             )
+            diagnostics_getter = getattr(preview_runtime, "timing_diagnostics", None)
+            timing_diagnostics = (
+                diagnostics_getter()
+                if preview_runtime is not None and callable(diagnostics_getter)
+                else None
+            )
             task_metrics = (
                 driver_metrics.task_metrics if driver_metrics is not None else {}
             )
@@ -1898,6 +1908,7 @@ def _screen_summary(
             _t_prev = _t_now
             if _dt > 0:
                 _fps = 0.9 * _fps + 0.1 / _dt
+                _render_gap_history_ms.append(_dt * 1000.0)
 
             _draw_header(buf, W, step, total_steps, "Summary — Live Preview")
 
@@ -2020,6 +2031,26 @@ def _screen_summary(
                         info_w,
                     )
                     row += 1
+                if show_debug:
+                    target_render_ms = 1000.0 / max(preview_target_fps, 1)
+                    debug_panel_h = max(8, min(16, H - row - 8))
+                    debug_lines = build_timing_panel_lines(
+                        panel_w=max(info_w - 4, 16),
+                        panel_h=debug_panel_h,
+                        diagnostics=timing_diagnostics,
+                        render_gap_trace=make_timing_trace(
+                            tuple(_render_gap_history_ms),
+                            target_interval_ms=target_render_ms,
+                            age_ms=0.0 if _render_gap_history_ms else None,
+                        ),
+                        render_work_trace=make_timing_trace(
+                            tuple(_render_work_history_ms),
+                            target_interval_ms=target_render_ms,
+                        ),
+                    )
+                    for line in debug_lines:
+                        _draw_text_clear(buf, row, 2, f"│ {line}", info_w)
+                        row += 1
             _draw_text_clear(buf, row, 2, "├" + box_line + "┤", info_w)
             row += 1
             _draw_text_clear(
@@ -2400,6 +2431,7 @@ def _screen_summary(
             render_elapsed_us = (time.monotonic() - loop_started_at) * 1_000_000.0
             _render_loop_count += 1
             _render_last_loop_us = render_elapsed_us
+            _render_work_history_ms.append(render_elapsed_us / 1000.0)
             if _render_loop_count == 1:
                 _render_avg_loop_us = render_elapsed_us
             else:

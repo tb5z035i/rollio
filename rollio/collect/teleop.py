@@ -11,6 +11,7 @@ from rollio.robot import JointState, Pose, RobotArm
 
 MapperMode = Literal["auto", "joint_direct", "pose_fk_ik"]
 ResolvedMapperMode = Literal["joint_direct", "pose_fk_ik", "noop"]
+_ZERO_VELOCITY_FOLLOWER_TYPES = frozenset({"airbot_play", "airbot_g2"})
 
 
 def _direct_map_allowlist(robot: RobotArm) -> set[str]:
@@ -90,9 +91,12 @@ class JointSpaceDirectMapper(TeleopMapper):
         if follower.n_dof != len(leader_state.position):
             return TeleopCommand.noop()
 
-        velocity = leader_state.velocity
-        if velocity is None:
+        if follower.info.robot_type in _ZERO_VELOCITY_FOLLOWER_TYPES:
             velocity = np.zeros_like(leader_state.position)
+        else:
+            velocity = leader_state.velocity
+            if velocity is None:
+                velocity = np.zeros_like(leader_state.position)
 
         return TeleopCommand(
             mode="joint_direct",

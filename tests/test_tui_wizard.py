@@ -6,6 +6,7 @@ import io
 
 import numpy as np
 
+from rollio.collect import RuntimeTimingDiagnostics, TimingTrace
 from rollio.defaults import DEFAULT_CONTROL_HZ, DEFAULT_CONTROL_INTERVAL_MS
 from rollio.config.schema import RobotConfig
 from rollio.episode.codecs import (
@@ -234,6 +235,9 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
 
             return {"driver": _DriverMetrics()}
 
+        def timing_diagnostics(self) -> RuntimeTimingDiagnostics:
+            return RuntimeTimingDiagnostics()
+
     preview_runtime = _FakePreviewRuntime()
 
     def fake_from_config(
@@ -271,12 +275,118 @@ def test_screen_summary_uses_shared_preview_runtime(monkeypatch) -> None:
 
     assert result is True
     assert created
-    assert created[0][1] == "asyncio"
+    assert created[0][1] == "round_robin"
     assert created[0][2] is True
     assert created[0][0].plotjuggler_enabled is True
     assert preview_runtime.open_called is True
     assert preview_runtime.return_zero_called is True
     assert preview_runtime.close_called is True
+
+
+def test_screen_summary_renders_timing_panel_when_debug_enabled(monkeypatch) -> None:
+    class _FakePreviewRuntime:
+        def __init__(self) -> None:
+            self.open_called = False
+            self.close_called = False
+            self.return_zero_called = False
+            self.scheduler_driver = "round_robin"
+            self.telemetry_hz = DEFAULT_CONTROL_HZ
+            self.control_hz = DEFAULT_CONTROL_HZ
+
+        def open(self) -> None:
+            self.open_called = True
+
+        def close(self) -> None:
+            self.close_called = True
+
+        def return_robots_to_zero(self, timeout: float = 10.0) -> dict[str, bool]:
+            del timeout
+            self.return_zero_called = True
+            return {}
+
+        def latest_frames(self) -> dict[str, object]:
+            return {}
+
+        def latest_robot_states(self) -> dict[str, dict[str, object]]:
+            return {}
+
+        def scheduler_metrics(self) -> dict[str, object]:
+            class _DriverMetrics:
+                def __init__(self) -> None:
+                    self.task_metrics = {}
+                    self.loop_run_count = 10
+                    self.last_loop_us = 420.0
+                    self.avg_loop_us = 400.0
+
+            return {"driver": _DriverMetrics()}
+
+        def timing_diagnostics(self) -> RuntimeTimingDiagnostics:
+            return RuntimeTimingDiagnostics(
+                scheduler_loop=TimingTrace(
+                    intervals_ms=(40.0, 4.0, 4.0),
+                    target_interval_ms=10.0,
+                    last_gap_ms=4.0,
+                    max_gap_ms=40.0,
+                    age_ms=1.0,
+                ),
+                telemetry_runs=TimingTrace(
+                    intervals_ms=(40.0, 4.0, 4.0),
+                    target_interval_ms=2.0,
+                    last_gap_ms=4.0,
+                    max_gap_ms=40.0,
+                    age_ms=0.8,
+                ),
+                control_runs=TimingTrace(
+                    intervals_ms=(40.0, 4.0, 4.0),
+                    target_interval_ms=2.0,
+                    last_gap_ms=4.0,
+                    max_gap_ms=40.0,
+                    age_ms=0.6,
+                ),
+                valid_robot_samples={
+                    "leader_arm": TimingTrace(
+                        intervals_ms=(40.0, 4.0, 4.0),
+                        target_interval_ms=2.0,
+                        last_gap_ms=4.0,
+                        max_gap_ms=40.0,
+                        age_ms=0.4,
+                    )
+                },
+            )
+
+    preview_runtime = _FakePreviewRuntime()
+
+    monkeypatch.setattr(
+        wizard.AsyncCollectionRuntime,
+        "from_config",
+        staticmethod(lambda *args, **kwargs: preview_runtime),
+    )
+
+    out = io.BytesIO()
+    result = wizard._screen_summary(
+        _FakeTerm(["\\", "\n"]),
+        out,
+        [],
+        [],
+        [],
+        [],
+        "demo",
+        "~/rollio_data",
+        "rollio_config.yaml",
+        mode="teleop",
+        video_codec="mp4v",
+        depth_codec="raw",
+        plotjuggler_enabled=True,
+        teleop_pairs=[],
+        step=5,
+        total_steps=5,
+    )
+
+    rendered = out.getvalue().decode("utf-8", errors="ignore")
+    assert result is True
+    assert "TIMING" in rendered
+    assert "sched" in rendered
+    assert "leader_arm" in rendered
 
 
 def test_match_robot_devices_distinguishes_same_can_by_type() -> None:

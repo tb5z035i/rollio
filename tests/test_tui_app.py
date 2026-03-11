@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from rollio.collect import RuntimeTimingDiagnostics, TimingTrace
 from rollio.config.schema import CameraConfig, ControlConfig, RollioConfig
 from rollio.defaults import DEFAULT_CONTROL_INTERVAL_MS
 from rollio.tui import app
@@ -47,6 +48,7 @@ class _FakeRuntime:
         frames: dict[str, np.ndarray] | None = None,
         robot_states: dict[str, dict[str, np.ndarray]] | None = None,
         pending_episode: object | None = None,
+        diagnostics: RuntimeTimingDiagnostics | None = None,
     ) -> None:
         self.recording = False
         self.elapsed = 0.0
@@ -54,6 +56,7 @@ class _FakeRuntime:
         self.depth_codec = "rawvideo"
         self._frames = frames or {}
         self._robot_states = robot_states or {}
+        self._diagnostics = diagnostics or RuntimeTimingDiagnostics()
         self._pending_episode = pending_episode or SimpleNamespace(
             episode_index=0,
             duration=0.2,
@@ -85,6 +88,9 @@ class _FakeRuntime:
 
     def latest_robot_states(self) -> dict[str, dict[str, np.ndarray]]:
         return self._robot_states
+
+    def timing_diagnostics(self) -> RuntimeTimingDiagnostics:
+        return self._diagnostics
 
     def start_episode(self) -> None:
         self.recording = True
@@ -168,6 +174,7 @@ def test_help_panel_shows_key_help_and_codecs() -> None:
     assert "start / stop" in joined
     assert "ENTER/k" in joined
     assert "BACKSPACE/d" in joined
+    assert "\\        debug" in joined
 
 
 def test_robot_panel_uses_eef_mm_range() -> None:
@@ -270,3 +277,46 @@ def test_run_collection_returns_robots_to_zero_before_close(monkeypatch) -> None
 
     assert fake_runtime.return_zero_calls == [5.0]
     assert fake_runtime.call_order[-2:] == ["return_zero", "close"]
+
+
+def test_run_collection_renders_timing_panel_when_debug_enabled(monkeypatch) -> None:
+    diagnostics = RuntimeTimingDiagnostics(
+        scheduler_loop=TimingTrace(
+            intervals_ms=(39.8, 40.2, 4.1, 4.0),
+            target_interval_ms=10.0,
+            last_gap_ms=4.0,
+            max_gap_ms=40.2,
+            age_ms=1.0,
+        ),
+        telemetry_runs=TimingTrace(
+            intervals_ms=(40.0, 4.0, 4.0),
+            target_interval_ms=2.0,
+            last_gap_ms=4.0,
+            max_gap_ms=40.0,
+            age_ms=0.8,
+        ),
+        control_runs=TimingTrace(
+            intervals_ms=(40.0, 4.0, 4.0),
+            target_interval_ms=2.0,
+            last_gap_ms=4.0,
+            max_gap_ms=40.0,
+            age_ms=0.5,
+        ),
+        valid_robot_samples={
+            "leader_arm": TimingTrace(
+                intervals_ms=(40.0, 4.0, 4.0),
+                target_interval_ms=2.0,
+                last_gap_ms=4.0,
+                max_gap_ms=40.0,
+                age_ms=0.3,
+            )
+        },
+    )
+    fake_runtime = _FakeRuntime(diagnostics=diagnostics)
+    cfg = RollioConfig(fps=10, mode="teleop", cameras=[], robots=[])
+
+    rendered = _run_collection_once(monkeypatch, fake_runtime, ["\\", "q"], cfg)
+
+    assert "TIMING" in rendered
+    assert "sched" in rendered
+    assert "leader_arm" in rendered
