@@ -178,6 +178,29 @@ def test_rollio_config_rejects_duplicate_robot_type_device_pairs() -> None:
         )
 
 
+def test_airbot_play_target_tracking_mode_normalizes_in_robot_options() -> None:
+    cfg = RobotConfig(
+        name="arm_cfg",
+        type="airbot_play",
+        role="follower",
+        num_joints=6,
+        options={"target_tracking_mode": "PVT"},
+    )
+
+    assert cfg.options["target_tracking_mode"] == "pvt"
+
+
+def test_airbot_play_target_tracking_mode_rejects_invalid_option() -> None:
+    with pytest.raises(ValueError, match="target_tracking_mode"):
+        RobotConfig(
+            name="arm_cfg",
+            type="airbot_play",
+            role="follower",
+            num_joints=6,
+            options={"target_tracking_mode": "invalid"},
+        )
+
+
 def test_codec_option_lookup_supports_aliases() -> None:
     assert get_rgb_codec_option("mp4v").name == "mpeg4"
     assert get_depth_codec_option("raw").name == "rawvideo"

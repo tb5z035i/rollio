@@ -104,8 +104,9 @@ class _DirectSDKG2Controller:
         self._last_debug: str | None = None
 
     def open(self) -> None:
-        self._executor = self._ah.create_asio_executor(1)
-        io_context = self._executor.get_io_context()
+        from rollio.robot.airbot.shared import get_shared_airbot_runtime
+
+        self._executor, io_context = get_shared_airbot_runtime(self._ah)
         self._eef = self._ah.EEF1.create(self._ah.EEFType.G2, self._ah.MotorType.DM)
         if not self._eef.init(io_context, self._can_interface, self._control_frequency):
             raise RuntimeError("The direct G2 initialization failed.")

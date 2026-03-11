@@ -18,6 +18,7 @@ from rollio.robot.airbot.shared import (
     AIRBOT_ROBOT_TYPE_TO_DETECTED_EEF,
     AIRBOT_ROBOT_TYPE_TO_SDK_EEF,
     _import_airbot_hardware,
+    get_shared_airbot_runtime,
     is_airbot_available,
     normalize_airbot_eef_type,
     scan_airbot_detected_robots,
@@ -387,8 +388,7 @@ class _AIRBOTStandaloneEEFCommon:
         if self._is_open:
             return
         try:
-            self._executor = self._ah.create_asio_executor(1)
-            io_context = self._executor.get_io_context()
+            self._executor, io_context = get_shared_airbot_runtime(self._ah)
             handle = self._create_eef_handle()
             initialized = handle.init(
                 io_context,

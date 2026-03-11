@@ -22,7 +22,8 @@ robots:
   device: can0
   direct_map_allowlist:
   - airbot_play
-  options: {}
+  options:
+    target_tracking_mode: mit
 - name: eef_g2_1
   type: airbot_g2
   role: follower
@@ -38,7 +39,8 @@ robots:
   device: can1
   direct_map_allowlist:
   - airbot_play
-  options: {}
+  options:
+    target_tracking_mode: mit
 - name: eef_e2b_3
   type: airbot_e2b
   role: leader

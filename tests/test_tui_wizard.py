@@ -346,7 +346,7 @@ def test_screen_robots_persists_airbot_e2b_as_separate_entity(monkeypatch) -> No
 
 
 def test_screen_robots_shows_airbot_play_joint_positions(monkeypatch) -> None:
-    prompts = iter(["leader_arm", "l"])
+    prompts = iter(["leader_arm", "l", "m"])
     out = io.BytesIO()
 
     class _FakeAirbotPlay:
@@ -398,10 +398,54 @@ def test_screen_robots_shows_airbot_play_joint_positions(monkeypatch) -> None:
     assert fake_robot.identify_started == 1
     assert fake_robot.identify_steps >= 1
     assert fake_robot.identify_stopped == 1
+    assert configs == [
+        RobotConfig(
+            name="leader_arm",
+            type="airbot_play",
+            role="leader",
+            num_joints=2,
+            device="can0",
+            options={"target_tracking_mode": "mit"},
+            direct_map_allowlist=["airbot_play"],
+        )
+    ]
     rendered = out.getvalue().decode("utf-8", errors="ignore")
     assert "gravity compensation" in rendered
     assert "j0" in rendered
     assert "+0.12" in rendered
+
+
+def test_screen_robots_persists_airbot_play_pvt_tracking_mode(monkeypatch) -> None:
+    prompts = iter(["follower_arm", "f", "p"])
+    monkeypatch.setattr(wizard, "_prompt_line", lambda *args, **kwargs: next(prompts))
+    monkeypatch.setattr(wizard, "_get_airbot_robot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(wizard.time, "sleep", lambda *args, **kwargs: None)
+
+    configs = wizard._screen_robots(
+        _FakeTerm(["\n"]),
+        io.BytesIO(),
+        [
+            DetectedDevice(
+                kind="robot",
+                dtype="airbot_play",
+                device_id="can1",
+                label="AIRBOT Play (can1)",
+                properties={"can_interface": "can1", "num_joints": 6},
+            )
+        ],
+    )
+
+    assert configs == [
+        RobotConfig(
+            name="follower_arm",
+            type="airbot_play",
+            role="follower",
+            num_joints=6,
+            device="can1",
+            options={"target_tracking_mode": "pvt"},
+            direct_map_allowlist=["airbot_play"],
+        )
+    ]
 
 
 def test_screen_robots_steps_g2_identification_preview(monkeypatch) -> None:

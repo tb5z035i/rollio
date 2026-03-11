@@ -1,12 +1,19 @@
 """Shared AIRBOT helpers for discovery and SDK imports."""
 from __future__ import annotations
 
+import threading
+from typing import Any
+
 from rollio.robot.airbot.can import probe_airbot_device, query_airbot_properties
 from rollio.robot.can_utils import is_can_interface_up, scan_can_interfaces
 from rollio.robot.scanner import DetectedRobot
 
 _ah = None
 _AH_AVAILABLE: bool | None = None
+_AIRBOT_SHARED_RUNTIME_LOCK = threading.Lock()
+_AIRBOT_SHARED_RUNTIMES: dict[int, tuple[Any, Any, Any]] = {}
+
+AIRBOT_SHARED_EXECUTOR_WORKERS = 8
 
 AIRBOT_ARM_ROBOT_TYPE = "airbot_play"
 AIRBOT_EEF_TYPE_TO_ROBOT_TYPE = {
@@ -45,6 +52,28 @@ def is_airbot_available() -> bool:
     """Check if ``airbot_hardware_py`` is available."""
     _, available = _import_airbot_hardware()
     return available
+
+
+def get_shared_airbot_runtime(ah: Any) -> tuple[Any, Any]:
+    """Return the shared AIRBOT executor and ``io_context``.
+
+    The SDK is typically imported once per process, so all AIRBOT arms and
+    standalone EEFs will share the same executor created with the 8-worker
+    pattern used by the vendor teleoperation example.
+
+    The cache is keyed by SDK-module identity so tests can swap in isolated
+    mocked SDK modules without leaking shared state between runs.
+    """
+    runtime_key = id(ah)
+    with _AIRBOT_SHARED_RUNTIME_LOCK:
+        cached_runtime = _AIRBOT_SHARED_RUNTIMES.get(runtime_key)
+        if cached_runtime is not None and cached_runtime[0] is ah:
+            return cached_runtime[1], cached_runtime[2]
+
+        executor = ah.create_asio_executor(AIRBOT_SHARED_EXECUTOR_WORKERS)
+        io_context = executor.get_io_context()
+        _AIRBOT_SHARED_RUNTIMES[runtime_key] = (ah, executor, io_context)
+        return executor, io_context
 
 
 def normalize_airbot_eef_type(eef_type: str | None) -> str:
@@ -121,6 +150,8 @@ __all__ = [
     "AIRBOT_ROBOT_TYPE_TO_DEFAULT_MOTOR",
     "AIRBOT_ROBOT_TYPE_TO_DETECTED_EEF",
     "AIRBOT_ROBOT_TYPE_TO_SDK_EEF",
+    "AIRBOT_SHARED_EXECUTOR_WORKERS",
+    "get_shared_airbot_runtime",
     "is_airbot_available",
     "normalize_airbot_eef_type",
     "scan_airbot_detected_robots",

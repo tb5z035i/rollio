@@ -15,6 +15,8 @@ from rollio.episode.codecs import (
 )
 from rollio.robot import robot_class_for_type
 
+AIRBOT_PLAY_TARGET_TRACKING_MODES = {"mit", "pvt"}
+
 
 # ─── Sub-models ────────────────────────────────────────────────────────
 
@@ -84,6 +86,18 @@ class RobotConfig(BaseModel):
 
     @model_validator(mode="after")
     def _populate_direct_map_allowlist(self) -> "RobotConfig":
+        normalized_options = dict(self.options)
+        if self.type == "airbot_play" and "target_tracking_mode" in normalized_options:
+            tracking_mode = str(normalized_options["target_tracking_mode"]).strip().lower()
+            if tracking_mode not in AIRBOT_PLAY_TARGET_TRACKING_MODES:
+                allowed = ", ".join(sorted(AIRBOT_PLAY_TARGET_TRACKING_MODES))
+                raise ValueError(
+                    "AIRBOT Play target_tracking_mode must be one of: "
+                    f"{allowed}"
+                )
+            normalized_options["target_tracking_mode"] = tracking_mode
+        self.options = normalized_options
+
         if self.direct_map_allowlist:
             normalized = [
                 str(item).strip()

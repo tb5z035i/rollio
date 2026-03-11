@@ -31,6 +31,7 @@ from rollio.robot.airbot.control_loop import (
 )
 from rollio.robot.airbot.shared import (
     _import_airbot_hardware,
+    get_shared_airbot_runtime,
     is_airbot_available,
     scan_airbot_detected_robots,
 )
@@ -133,7 +134,7 @@ class AIRBOTPlay(RobotArm):
 
     This robot communicates via SocketCAN and supports:
     - Free drive mode with gravity compensation
-    - Target tracking mode with PD control
+    - Target tracking mode with MIT or PVT backend control
     - MIT mode for direct torque control
     - PVT mode for trajectory tracking
 
@@ -144,6 +145,9 @@ class AIRBOTPlay(RobotArm):
         gravity_coefficients: Per-joint gravity compensation coefficients override.
             If None, coefficients are read from hardware and selected based on
             the detected end effector type.
+        target_tracking_mode: AIRBOT target-tracking backend. ``"mit"`` keeps
+            the original impedance-based tracking path; ``"pvt"`` replays the
+            latest target with fixed PVT velocity/current-threshold vectors.
     """
 
     ROBOT_TYPE = "airbot_play"
@@ -161,9 +165,18 @@ class AIRBOTPlay(RobotArm):
         "other": np.array([0.6, 0.6, 0.6, 1.5, 1.5, 1.5]),
     }
 
-    # Fixed MIT gains required by the AIRBOT controller in target-tracking mode.
-    TARGET_TRACKING_KP = np.array([200.0, 200.0, 200.0, 50.0, 50.0, 50.0])
-    TARGET_TRACKING_KD = np.array([5.0, 5.0, 5.0, 1.0, 1.0, 1.0])
+    # Fixed gains required by the AIRBOT controller for MIT target tracking.
+    TARGET_TRACKING_KP = np.array([200.0, 200.0, 200.0, 20.0, 20.0, 20.0])
+    TARGET_TRACKING_KD = np.array([1.0, 1.0, 1.0, 0.2, 0.2, 0.2])
+    TARGET_TRACKING_MODE_MIT = "mit"
+    TARGET_TRACKING_MODE_PVT = "pvt"
+    TARGET_TRACKING_MODE_CHOICES = (
+        TARGET_TRACKING_MODE_MIT,
+        TARGET_TRACKING_MODE_PVT,
+    )
+    # Requested PVT tracking uses fixed velocity/current-threshold vectors.
+    TARGET_TRACKING_PVT_VELOCITY = 10.0
+    TARGET_TRACKING_PVT_CURRENT_THRESHOLD = 10.0
 
     # ── Class methods ─────────────────────────────────────────────────────
 
@@ -207,6 +220,7 @@ class AIRBOTPlay(RobotArm):
         control_frequency: int = DEFAULT_CONTROL_HZ,
         gravity_coefficients: np.ndarray | None = None,
         frame_name: str | None = None,
+        target_tracking_mode: str = TARGET_TRACKING_MODE_MIT,
     ) -> None:
         ah, available = _import_airbot_hardware()
         if not available:
@@ -219,6 +233,9 @@ class AIRBOTPlay(RobotArm):
         self._can_interface = can_interface
         self._control_frequency = control_frequency
         self._dt = 1.0 / control_frequency
+        self._target_tracking_mode = self._normalize_target_tracking_mode(
+            target_tracking_mode
+        )
 
         # State
         self._is_open = False
@@ -242,6 +259,7 @@ class AIRBOTPlay(RobotArm):
             "can_interface": can_interface,
             "control_frequency": control_frequency,
             "motor_types": ["OD", "OD", "OD", "DM", "DM", "DM"],
+            "target_tracking_mode": self._target_tracking_mode,
         }
 
         # Query hardware properties (end effector type, gravity coefficients)
@@ -268,6 +286,20 @@ class AIRBOTPlay(RobotArm):
             },
             properties=self._properties
         )
+
+    @classmethod
+    def _normalize_target_tracking_mode(cls, mode: str) -> str:
+        normalized = str(mode).strip().lower()
+        if normalized in cls.TARGET_TRACKING_MODE_CHOICES:
+            return normalized
+        choices = ", ".join(cls.TARGET_TRACKING_MODE_CHOICES)
+        raise ValueError(
+            f"Unsupported AIRBOT Play target_tracking_mode {mode!r}. "
+            f"Expected one of: {choices}."
+        )
+
+    def _target_tracking_uses_pvt(self) -> bool:
+        return self._target_tracking_mode == self.TARGET_TRACKING_MODE_PVT
 
     def _load_kinematics(self) -> KinematicsModel:
         """Load kinematics model from URDF.
@@ -478,7 +510,9 @@ class AIRBOTPlay(RobotArm):
         if mode == ControlMode.TARGET_TRACKING:
             self._arm.set_param(
                 "arm.control_mode",
-                self._ah.MotorControlMode.MIT,
+                self._ah.MotorControlMode.PVT
+                if self._target_tracking_uses_pvt()
+                else self._ah.MotorControlMode.MIT,
             )
             return True
         if mode == ControlMode.DISABLED:
@@ -523,6 +557,9 @@ class AIRBOTPlay(RobotArm):
     def _emit_fixed_tracking(self, intent: AirbotFixedTrackingIntent) -> None:
         if self._arm is None:
             return
+        if self._target_tracking_uses_pvt():
+            self._emit_pvt_tracking(intent.position_target)
+            return
         tau_ff = (
             np.zeros(self.N_DOF, dtype=np.float64)
             if intent.feedforward is None
@@ -538,11 +575,34 @@ class AIRBOTPlay(RobotArm):
             kd.tolist(),
         )
 
+    def _emit_pvt_tracking(self, position_target: np.ndarray) -> None:
+        if self._arm is None:
+            return
+        velocity_target = np.full(
+            self.N_DOF,
+            self.TARGET_TRACKING_PVT_VELOCITY,
+            dtype=np.float64,
+        )
+        # The Play SDK exposes the third PVT vector as effort/threshold-like data.
+        current_threshold = np.full(
+            self.N_DOF,
+            self.TARGET_TRACKING_PVT_CURRENT_THRESHOLD,
+            dtype=np.float64,
+        )
+        self._arm.pvt(
+            np.asarray(position_target, dtype=np.float64).tolist(),
+            velocity_target.tolist(),
+            current_threshold.tolist(),
+        )
+
     def _emit_dynamic_tracking(
         self,
         joint_state: JointState,
         intent: AirbotDynamicTrackingIntent,
     ) -> None:
+        if self._target_tracking_uses_pvt():
+            self._emit_pvt_tracking(intent.position_target)
+            return
         tau_ff = (
             np.zeros(self.N_DOF, dtype=np.float64)
             if intent.user_feedforward is None
@@ -644,6 +704,10 @@ class AIRBOTPlay(RobotArm):
     @property
     def is_enabled(self) -> bool:
         return self._is_enabled
+
+    @property
+    def target_tracking_mode(self) -> str:
+        return self._target_tracking_mode
 
     @property
     def can_interface(self) -> str:
@@ -771,8 +835,7 @@ class AIRBOTPlay(RobotArm):
             )
 
         try:
-            self._executor = self._ah.create_asio_executor(1)
-            io_context = self._executor.get_io_context()
+            self._executor, io_context = get_shared_airbot_runtime(self._ah)
 
             # Create arm with motor configuration:
             # Joints 0-2: OD motors (high torque)

@@ -1048,8 +1048,9 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
         rob = _make_robot(dev)
         chosen_name: str | None = None
         chosen_role: str = _default_robot_role(dev.dtype)
+        chosen_target_tracking_mode: str = "mit"
         default_name = _default_robot_name(dev.dtype, i)
-        phase = "preview"    # "preview" → "name" → "role" → done
+        phase = "preview"    # "preview" → "name" → "role" → "tracking" → done
         _needs_clear = True
         
         # Start identification for AIRBOT devices
@@ -1246,6 +1247,32 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
                     phase = "name"
                     continue
                 chosen_role = "leader" if result.lower().startswith("l") else "follower"
+                phase = "tracking" if dev.dtype == "airbot_play" else "done"
+
+            elif phase == "tracking":
+                _draw_text(buf, prompt_row - 1, 2,
+                           f"Name: \x1b[97;1m{chosen_name}\x1b[0m")
+                _draw_text(buf, prompt_row, 2,
+                           f"Role: \x1b[97;1m{chosen_role}\x1b[0m")
+                _draw_text(buf, prompt_row + 1, 2,
+                           "\x1b[33m[Enter]\x1b[0m accept  "
+                           "\x1b[33m[Esc]\x1b[0m back")
+
+                out.write(
+                    _SY_S + b"\x1b[H\x1b[2J" + buf.getvalue() + _SY_E)
+                out.flush()
+
+                result = _prompt_line(
+                    term, out, prompt_row - 2, 2,
+                    "Target tracking ([m]it / [p]vt): ",
+                    "p" if chosen_target_tracking_mode == "pvt" else "m",
+                )
+                if result is None:
+                    phase = "role"
+                    continue
+                chosen_target_tracking_mode = (
+                    "pvt" if result.lower().startswith("p") else "mit"
+                )
                 phase = "done"
 
         # Stop identification for AIRBOT devices
@@ -1259,12 +1286,16 @@ def _screen_robots(term: _Term, out, devices: list[DetectedDevice]
             rob.close()
 
         if chosen_name:
+            robot_options = {}
+            if dev.dtype == "airbot_play":
+                robot_options["target_tracking_mode"] = chosen_target_tracking_mode
             configs.append(RobotConfig(
                 name=chosen_name,
                 type=dev.dtype,
                 role=chosen_role,
                 num_joints=dev.properties.get("num_joints", 6),
                 device=str(dev.properties.get("can_interface", dev.device_id)),
+                options=robot_options,
             ))
 
     return configs
@@ -1768,16 +1799,23 @@ def _screen_summary(term: _Term, out,
                                  f"\x1b[90m{rc.num_joints}-DOF\x1b[0m",
                                  info_w)
                 row += 1
-                if rc.type.startswith("airbot_") and matched_rob_dev is not None:
-                    sn = matched_rob_dev.properties.get("serial_number", "")
-                    eef = matched_rob_dev.properties.get("end_effector_type", "")
-                    info_line = ""
+                if rc.type.startswith("airbot_"):
+                    sn = ""
+                    eef = ""
+                    if matched_rob_dev is not None:
+                        sn = matched_rob_dev.properties.get("serial_number", "")
+                        eef = matched_rob_dev.properties.get("end_effector_type", "")
+                    info_parts: list[str] = []
                     if sn:
-                        info_line += f"SN:{sn}"
+                        info_parts.append(f"SN:{sn}")
                     if eef:
-                        if info_line:
-                            info_line += " "
-                        info_line += f"EEF:{eef}"
+                        info_parts.append(f"EEF:{eef}")
+                    if rc.type == "airbot_play":
+                        tracking_mode = str(
+                            rc.options.get("target_tracking_mode", "mit")
+                        ).strip().upper()
+                        info_parts.append(f"TRACK:{tracking_mode}")
+                    info_line = " ".join(info_parts)
                     if info_line:
                         _draw_text_clear(buf, row, 2,
                                          f"│     \x1b[90m{info_line}\x1b[0m",

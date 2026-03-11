@@ -250,6 +250,7 @@ class TestAIRBOTPlayMocked:
         assert robot.n_dof == 6
         assert robot.can_interface == "can0"
         assert robot.ROBOT_TYPE == "airbot_play"
+        assert robot.target_tracking_mode == "mit"
     
     @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
     @patch('rollio.robot.airbot.play._import_airbot_hardware')
@@ -271,11 +272,52 @@ class TestAIRBOTPlayMocked:
         robot.open()
         assert robot._is_open
         mock_arm.init.assert_called_once()
+        mock_ah.create_asio_executor.assert_called_once_with(8)
         
         # Close
         robot.close()
         assert not robot._is_open
         mock_arm.uninit.assert_called_once()
+
+    @patch("rollio.robot.airbot.eef._import_airbot_hardware")
+    @patch("rollio.robot.airbot.play._import_airbot_hardware")
+    @patch("rollio.robot.airbot.play.is_can_interface_up", return_value=True)
+    def test_airbot_play_and_g2_share_executor(
+        self,
+        mock_can_up: MagicMock,
+        mock_play_import: MagicMock,
+        mock_eef_import: MagicMock,
+        mock_airbot_hardware,
+    ) -> None:
+        """AIRBOT arm and G2 reuse the same shared executor/io_context."""
+        del mock_can_up
+        mock_ah, mock_arm = mock_airbot_hardware
+        mock_eef = MagicMock()
+        mock_eef.init.return_value = True
+        mock_ah.EEFType.G2 = "G2"
+        mock_ah.EEF1.create.return_value = mock_eef
+        mock_play_import.return_value = (mock_ah, True)
+        mock_eef_import.return_value = (mock_ah, True)
+
+        from rollio.robot.airbot.eef import AIRBOTG2
+        from rollio.robot.airbot.play import AIRBOTPlay
+
+        arm = AIRBOTPlay(can_interface="can0")
+        gripper = AIRBOTG2(can_interface="can1")
+
+        arm.open()
+        gripper.open()
+
+        shared_executor = mock_ah.create_asio_executor.return_value
+        shared_io_context = shared_executor.get_io_context.return_value
+        mock_ah.create_asio_executor.assert_called_once_with(8)
+        assert arm._executor is shared_executor
+        assert gripper._executor is shared_executor
+        assert mock_arm.init.call_args[0][0] is shared_io_context
+        assert mock_eef.init.call_args[0][0] is shared_io_context
+
+        gripper.close()
+        arm.close()
     
     @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
     @patch('rollio.robot.airbot.play._import_airbot_hardware')
@@ -436,6 +478,98 @@ class TestAIRBOTPlayMocked:
             np.array([5.0, 5.0, 5.0, 1.0, 1.0, 1.0]),
         )
         
+        robot.close()
+
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
+    def test_airbot_target_tracking_step_uses_pvt_when_configured(
+        self,
+        mock_import: MagicMock,
+        mock_can_up: MagicMock,
+        mock_airbot_hardware,
+    ) -> None:
+        """AIRBOT Play can use PVT for target tracking when configured."""
+        del mock_can_up
+        mock_ah, mock_arm = mock_airbot_hardware
+        mock_import.return_value = (mock_ah, True)
+
+        from rollio.robot.airbot.play import AIRBOTPlay
+
+        robot = AIRBOTPlay(
+            can_interface="can0",
+            target_tracking_mode="pvt",
+        )
+        robot.open()
+        robot.enable()
+
+        assert robot.set_control_mode(ControlMode.TARGET_TRACKING) is True
+        mock_arm.set_param.assert_any_call("arm.control_mode", "PVT")
+
+        target = np.array([0.1, -0.2, 0.3, -0.4, 0.5, -0.6], dtype=np.float64)
+        robot.step_target_tracking(
+            position_target=target,
+            velocity_target=np.zeros(6, dtype=np.float64),
+            add_gravity_compensation=True,
+        )
+
+        assert _wait_until(lambda: mock_arm.pvt.call_count >= 1)
+        call_args = mock_arm.pvt.call_args[0]
+        assert len(call_args) == 3
+        np.testing.assert_array_equal(np.asarray(call_args[0]), target)
+        np.testing.assert_array_equal(
+            np.asarray(call_args[1]),
+            np.full(6, 10.0),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(call_args[2]),
+            np.full(6, 10.0),
+        )
+        mock_arm.mit.assert_not_called()
+
+        robot.close()
+
+    @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
+    @patch('rollio.robot.airbot.play._import_airbot_hardware')
+    def test_airbot_target_tracking_command_uses_pvt_when_configured(
+        self,
+        mock_import: MagicMock,
+        mock_can_up: MagicMock,
+        mock_airbot_hardware,
+    ) -> None:
+        del mock_can_up
+        mock_ah, mock_arm = mock_airbot_hardware
+        mock_import.return_value = (mock_ah, True)
+
+        from rollio.robot.airbot.play import AIRBOTPlay
+
+        robot = AIRBOTPlay(
+            can_interface="can0",
+            target_tracking_mode="pvt",
+        )
+        robot.open()
+        robot.enable()
+        robot.set_control_mode(ControlMode.TARGET_TRACKING)
+
+        robot.command_target_tracking(
+            TargetTrackingCommand(
+                position_target=np.array([0.6, 0.5, 0.4, 0.3, 0.2, 0.1]),
+                velocity_target=np.zeros(6),
+                kp=np.full(6, 30.0),
+                kd=np.full(6, 3.0),
+                feedforward=np.ones(6),
+            )
+        )
+
+        assert _wait_until(lambda: mock_arm.pvt.call_count >= 1)
+        call_args = mock_arm.pvt.call_args[0]
+        np.testing.assert_array_equal(
+            np.asarray(call_args[0]),
+            np.array([0.6, 0.5, 0.4, 0.3, 0.2, 0.1]),
+        )
+        np.testing.assert_array_equal(np.asarray(call_args[1]), np.full(6, 10.0))
+        np.testing.assert_array_equal(np.asarray(call_args[2]), np.full(6, 10.0))
+        mock_arm.mit.assert_not_called()
+
         robot.close()
 
     @patch('rollio.robot.airbot.play.is_can_interface_up', return_value=True)
@@ -772,6 +906,7 @@ class TestAIRBOTEEFMocked:
 
         robot = AIRBOTG2(can_interface="can0")
         robot.open()
+        mock_ah.create_asio_executor.assert_called_once_with(8)
         robot.enable()
         assert robot.set_control_mode(ControlMode.TARGET_TRACKING) is True
 
