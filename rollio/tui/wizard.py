@@ -6,6 +6,7 @@ prompts the user for channel names.  Works without a desktop environment.
 
 from __future__ import annotations
 
+import codecs
 import io
 import os
 import select
@@ -72,6 +73,8 @@ MAPPER_OPTIONS: tuple[tuple[str, str], ...] = (
 _SY_S = b"\x1b[?2026h"
 _SY_E = b"\x1b[?2026l"
 _LOADING_FRAMES = ("|", "/", "-", "\\")
+_ESCAPE_SEQUENCE_TIMEOUT = 0.2
+_ESCAPE_SEQUENCE_POLL_INTERVAL = 0.005
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -87,6 +90,8 @@ class _Term:
         self.orig = None
         self.cols = 80
         self.rows = 24
+        self._pending_chars = ""
+        self._decoder = codecs.getincrementaldecoder("utf-8")()
 
     def __enter__(self):
         self.orig = termios.tcgetattr(self.fd)
@@ -112,19 +117,43 @@ class _Term:
         self.rows = max(rows, 10)
 
     def _read_ready_char(self, timeout: float) -> str | None:
-        if select.select([sys.stdin], [], [], timeout)[0]:
-            return sys.stdin.read(1)
+        if self._pending_chars:
+            ch = self._pending_chars[0]
+            self._pending_chars = self._pending_chars[1:]
+            return ch
+        if not select.select([self.fd], [], [], timeout)[0]:
+            return None
+        while True:
+            chunk = os.read(self.fd, 32)
+            if not chunk:
+                return None
+            decoded = self._decoder.decode(chunk, final=False)
+            if decoded:
+                self._pending_chars = decoded[1:]
+                return decoded[0]
+            if not select.select([self.fd], [], [], 0)[0]:
+                return None
         return None
 
-    def _decode_key(self, first_char: str, sequence_timeout: float = 0.02) -> str:
+    def _decode_key(
+        self,
+        first_char: str,
+        sequence_timeout: float = _ESCAPE_SEQUENCE_TIMEOUT,
+        sequence_poll_interval: float = _ESCAPE_SEQUENCE_POLL_INTERVAL,
+    ) -> str:
         if first_char != "\x1b":
             return first_char
 
         sequence = first_char
+        deadline = time.monotonic() + sequence_timeout
         while True:
-            timeout = sequence_timeout if len(sequence) == 1 else 0.002
-            extra = self._read_ready_char(timeout)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            extra = self._read_ready_char(min(sequence_poll_interval, remaining))
             if extra is None:
+                if len(sequence) == 1 or sequence.startswith("\x1b[") or sequence.startswith("\x1bO"):
+                    continue
                 break
             sequence += extra
             if sequence.startswith("\x1b[") or sequence.startswith("\x1bO"):
@@ -148,14 +177,15 @@ class _Term:
         return sequence
 
     def read_key(self) -> str | None:
-        if select.select([sys.stdin], [], [], 0)[0]:
-            ch = sys.stdin.read(1)
+        ch = self._read_ready_char(0)
+        if ch is not None:
             return self._decode_key(ch)
         return None
 
     def read_key_blocking(self, timeout: float = 0.05) -> str | None:
-        if select.select([sys.stdin], [], [], timeout)[0]:
-            return self._decode_key(sys.stdin.read(1))
+        ch = self._read_ready_char(timeout)
+        if ch is not None:
+            return self._decode_key(ch)
         return None
 
 

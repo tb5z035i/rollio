@@ -38,29 +38,42 @@ def _robot_device(
 
 def test_term_decodes_arrow_escape_sequences(monkeypatch) -> None:
     class _FakeStdin:
-        def __init__(self, chars: list[str]) -> None:
-            self._chars = chars
-
         def fileno(self) -> int:
             return 0
 
-        def read(self, size: int) -> str:
-            assert size == 1
-            return self._chars.pop(0)
-
-    fake_stdin = _FakeStdin(list("\x1b[1;2A"))
+    fake_stdin = _FakeStdin()
+    chunks = [b"\x1b[1;2A"]
 
     def fake_select(readers, _writers, _errors, _timeout):
-        if readers and fake_stdin._chars:
-            return ([fake_stdin], [], [])
+        if readers and chunks:
+            return ([0], [], [])
         return ([], [], [])
 
+    monkeypatch.setattr(wizard.os, "read", lambda fd, size: chunks.pop(0))
     monkeypatch.setattr(wizard.sys, "stdin", fake_stdin)
     monkeypatch.setattr(wizard.select, "select", fake_select)
 
     term = wizard._Term()
 
     assert term.read_key_blocking(0.0) == "UP"
+
+
+def test_term_decodes_delayed_arrow_escape_sequences(monkeypatch) -> None:
+    term = object.__new__(wizard._Term)
+    term.fd = 0
+    term._pending_chars = ""
+    term._decoder = wizard.codecs.getincrementaldecoder("utf-8")()
+    polls = iter((None, "[", None, "A"))
+    timestamps = iter((0.0, 0.0, 0.01, 0.02, 0.03))
+
+    monkeypatch.setattr(wizard.time, "monotonic", lambda: next(timestamps, 0.04))
+    monkeypatch.setattr(term, "_read_ready_char", lambda timeout: next(polls, None))
+
+    assert term._decode_key(
+        "\x1b",
+        sequence_timeout=0.05,
+        sequence_poll_interval=0.01,
+    ) == "UP"
 
 
 def test_pick_option_supports_arrow_navigation() -> None:

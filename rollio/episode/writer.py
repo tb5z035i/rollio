@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -163,37 +164,50 @@ class LeRobotV21Writer:
             command.extend(["-pix_fmt", output_pix_fmt])
         command.extend(codec_option.ffmpeg_args)
         command.append(str(path))
+        stderr = ""
+        write_error: OSError | None = None
         try:
-            with subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            ) as proc:
-                try:
-                    for _, frame in frames:
-                        arr = np.asarray(frame)
-                        if arr.shape[:2] != (h, w):
-                            raise ValueError(
-                                "All frames in one stream must share the same resolution"
-                            )
-                        if proc.stdin is None:
-                            raise RuntimeError("ffmpeg stdin was not created")
-                        proc.stdin.write(arr.tobytes())
-                finally:
-                    if proc.stdin is not None:
-                        proc.stdin.close()
-                stderr = (
-                    proc.stderr.read().decode("utf-8", errors="replace")
-                    if proc.stderr
-                    else ""
-                )
-                return_code = proc.wait()
+            with tempfile.TemporaryFile() as stderr_file:
+                with subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_file,
+                ) as proc:
+                    try:
+                        for _, frame in frames:
+                            arr = np.asarray(frame)
+                            if arr.shape[:2] != (h, w):
+                                raise ValueError(
+                                    "All frames in one stream must share the same resolution"
+                                )
+                            if proc.stdin is None:
+                                raise RuntimeError("ffmpeg stdin was not created")
+                            proc.stdin.write(arr.tobytes())
+                    except OSError as exc:
+                        write_error = exc
+                    finally:
+                        if proc.stdin is not None:
+                            try:
+                                proc.stdin.close()
+                            except OSError as exc:
+                                if write_error is None:
+                                    write_error = exc
+                    return_code = proc.wait()
+                stderr_file.seek(0)
+                stderr = stderr_file.read().decode("utf-8", errors="replace")
         except FileNotFoundError as exc:
             if codec_option.kind == "rgb":
                 self._write_video_opencv(path, frames, fps)
                 return
             raise RuntimeError("ffmpeg is required to export depth videos") from exc
+        if write_error is not None:
+            if codec_option.kind == "rgb":
+                self._write_video_opencv(path, frames, fps)
+                return
+            raise RuntimeError(
+                f"ffmpeg failed while encoding {path.name} with {codec_option.name}: {stderr.strip()}"
+            ) from write_error
         if return_code != 0:
             if codec_option.kind == "rgb":
                 self._write_video_opencv(path, frames, fps)
