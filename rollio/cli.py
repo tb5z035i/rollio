@@ -138,6 +138,34 @@ def _cmd_collect(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_replay(args: argparse.Namespace) -> None:
+    """Run the episode replay TUI."""
+    from rollio.config.schema import RollioConfig
+    from rollio.tui.replay import run_replay
+
+    cfg_path = Path(args.config)
+    if cfg_path.exists():
+        cfg = RollioConfig.load(cfg_path)
+        print(f"Loaded config from {cfg_path}")
+    else:
+        print(f"Config not found at {cfg_path}.")
+        print("Run 'rollio setup' first, or specify --config path.")
+        sys.exit(1)
+
+    episode_path = Path(args.episode_path).expanduser()
+    print(f"Project: {cfg.project_name}")
+    print(f"Replay episode: {episode_path}")
+    print(f"Cameras: {[c.name for c in cfg.cameras]} ({[c.type for c in cfg.cameras]})")
+    print(f"Robots:  {[r.name for r in cfg.robots]} ({[r.type for r in cfg.robots]})")
+    print("Starting replay TUI…")
+
+    try:
+        run_replay(cfg, episode_path)
+    except (FileNotFoundError, ValueError, ImportError, RuntimeError, OSError) as exc:
+        print(f"Replay startup failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _cmd_test(args: argparse.Namespace) -> None:
     """Run hardware tests."""
     from rollio.tests import get_available_tests, get_test_description, run_test
@@ -334,6 +362,15 @@ def main() -> None:
         "-c", "--config", default="rollio_config.yaml", help="Config file path"
     )
 
+    # ── replay ────────────────────────────────────────────────────
+    p_replay = sub.add_parser("replay", help="Replay one recorded episode")
+    p_replay.add_argument(
+        "episode_path",
+        help="Path to the episode parquet file to replay")
+    p_replay.add_argument(
+        "-c", "--config", default="rollio_config.yaml",
+        help="Config file path")
+
     # ── test ──────────────────────────────────────────────────────
     p_test = sub.add_parser("test", help="Run hardware tests")
     p_test.add_argument(
@@ -406,6 +443,8 @@ def main() -> None:
         _cmd_setup(args)
     elif args.command == "collect":
         _cmd_collect(args)
+    elif args.command == "replay":
+        _cmd_replay(args)
     elif args.command == "test":
         _cmd_test(args)
     elif args.command == "completion":
